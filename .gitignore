@@ -1,0 +1,19 @@
+# Local artifacts
+__pycache__/
+.pytest_cache/
+.python_packages/
+*.pyc
+api.zip
+
+# Terraform local state/cache
+infra/terraform/.terraform/
+infra/terraform/tfplan
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/crash.log
+infra/terraform/crash.*.log
+
+# Local env/secrets
+.env
+local.settings.json
+api/local.settings.json

@@ -1,0 +1,116 @@
+name: infra-terraform
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra-terraform.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra-terraform.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment gate
+        type: choice
+        options:
+          - infra-dev
+          - infra-prod
+        default: infra-dev
+      terraform_environment:
+        description: Terraform tfvars environment
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
+      apply:
+        description: Apply Terraform plan after approval
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  ARM_USE_OIDC: true
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_IN_AUTOMATION: true
+
+jobs:
+  terraform:
+    name: Terraform plan/apply
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'infra-dev' }}
+    defaults:
+      run:
+        working-directory: infra/terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Select Terraform environment
+        id: tfenv
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ github.event.inputs.terraform_environment }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=clan-war-board/${{ steps.tfenv.outputs.name }}.tfstate" \
+            -backend-config="use_oidc=true"
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        run: |
+          terraform plan \
+            -var-file="env/${{ steps.tfenv.outputs.name }}.tfvars" \
+            -var="azure_subscription_id=${{ vars.AZURE_SUBSCRIPTION_ID }}" \
+            -out=tfplan
+
+      - name: Upload Terraform plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ steps.tfenv.outputs.name }}
+          path: infra/terraform/tfplan
+          retention-days: 7
+
+      - name: Terraform apply
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true'
+        run: terraform apply -auto-approve tfplan
+
+      - name: Show Terraform outputs
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true'
+        run: terraform output

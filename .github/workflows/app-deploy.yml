@@ -1,0 +1,135 @@
+name: app-deploy
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'web/**'
+      - 'tests/**'
+      - '.github/workflows/app-deploy.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - 'web/**'
+      - 'tests/**'
+      - '.github/workflows/app-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment gate
+        type: choice
+        options:
+          - app-dev
+          - app-prod
+        default: app-dev
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: api
+
+jobs:
+  test:
+    name: Test API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install API dependencies
+        run: python -m pip install -r api/requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  deploy-api:
+    name: Deploy Azure Function API
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'app-dev' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build Python dependencies into deployment package
+        shell: bash
+        run: |
+          pushd "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+          popd
+
+      - name: Create Function App zip
+        shell: bash
+        run: |
+          pushd "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}"
+          zip -r ../api.zip .
+          popd
+
+      - name: Deploy Function App zip
+        shell: bash
+        run: |
+          az functionapp deployment source config-zip \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.AZURE_FUNCTIONAPP_NAME }}" \
+            --src api.zip
+
+      - name: Verify health endpoint
+        shell: bash
+        run: |
+          url="https://${{ vars.AZURE_FUNCTIONAPP_NAME }}.azurewebsites.net/api/health"
+          echo "Checking $url"
+          curl --fail --retry 8 --retry-delay 10 --retry-connrefused "$url"
+
+  deploy-web:
+    name: Deploy Static Web App
+    needs: test
+    if: github.event_name != 'pull_request' && hashFiles('web/package.json') != ''
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'app-dev' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy Static Web App
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: web
+          output_location: dist
