@@ -4,7 +4,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
-from leaderboard import ClanStanding, get_clan, get_leaderboard, health, ranked_standings, wom_import_plan
+from leaderboard import (
+    ClanStanding,
+    get_clan,
+    get_leaderboard,
+    get_public_availability,
+    get_public_fight_summary,
+    health,
+    ranked_standings,
+    wom_import_plan,
+)
 
 
 class LeaderboardTests(unittest.TestCase):
@@ -39,6 +48,22 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(plan["source"], "Wise Old Man Groups API")
         self.assertIn("member list", plan["allowedData"])
         self.assertIn("upcoming war world", plan["excludedData"])
+
+    def test_public_availability_hides_exact_intel(self):
+        payload = get_public_availability()
+        row = payload["availability"][0]
+        self.assertIn("exact world/location/rally notes hidden", payload["privacy"])
+        self.assertNotIn("world", row)
+        self.assertNotIn("hotspot", row)
+        self.assertNotIn("rallyNotes", row)
+
+    def test_public_fight_summary_is_completed_only(self):
+        summary = get_public_fight_summary("fight-static-example")
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["status"], "published")
+        self.assertIn("completed sanitized", summary["privacy"])
+        self.assertNotIn("nextWorld", summary)
+        self.assertIsNone(get_public_fight_summary("missing"))
 
 
 if __name__ == "__main__":

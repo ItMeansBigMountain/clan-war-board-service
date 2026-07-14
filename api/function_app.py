@@ -5,7 +5,7 @@ try:
 except ImportError:  # Allows unit tests/imports without Azure Functions installed.
     func = None
 
-from leaderboard import get_clan, get_leaderboard, health
+from leaderboard import get_clan, get_leaderboard, get_public_availability, get_public_fight_summary, health
 
 
 if func is not None:
@@ -26,6 +26,18 @@ if func is not None:
         if clan is None:
             return json_response({"error": "clan_not_found"}, status_code=404)
         return json_response(clan)
+
+    @app.route(route="public/availability", methods=["GET"])
+    def availability_route(req):
+        return json_response(get_public_availability())
+
+    @app.route(route="public/fights/{fightId}/summary", methods=["GET"])
+    def fight_summary_route(req):
+        fight_id = req.route_params.get("fightId", "")
+        summary = get_public_fight_summary(fight_id)
+        if summary is None:
+            return json_response({"error": "fight_not_found"}, status_code=404)
+        return json_response(summary)
 
 
 def json_response(payload: dict, status_code: int = 200):

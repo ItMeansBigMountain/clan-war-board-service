@@ -17,6 +17,10 @@ Likely attacks:
 
 ## Security principles
 
+0. **Do not pretend RuneLite traffic can be perfectly proven**
+
+   The service is RuneLite-plugin-oriented, but any public Java client can be reverse engineered. Do not rely on an embedded static secret. Use install registration, short-lived tokens, leader/rank checks, rate limits, corroboration, and anomaly detection.
+
 1. **No public upcoming intel by default**
 
    Public APIs must not expose exact upcoming world, hotspot, rally notes, fallback worlds, or leader notes.
@@ -44,6 +48,14 @@ Likely attacks:
 7. **Terms hash for agreement**
 
    Leader acceptance must bind to exact terms. If terms change, force re-confirmation.
+
+8. **Website is read-only**
+
+   The public website must use read-only public endpoints or static JSON snapshots. It must not receive tokens capable of creating fights, accepting applications, or submitting telemetry.
+
+9. **Telemetry is evidence, not truth**
+
+   Fight statistics are derived from multiple observations. Single-client claims should be weighted cautiously and can be rejected or marked low confidence.
 
 ## MVP access model
 

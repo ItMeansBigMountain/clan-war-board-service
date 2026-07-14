@@ -108,6 +108,51 @@ def rank_for_clan(clan_id: str) -> int:
     return 0
 
 
+def get_public_availability() -> dict[str, Any]:
+    return {
+        "generatedAt": utc_now_iso(),
+        "source": "static-mvp",
+        "privacy": "public availability only; exact world/location/rally notes hidden",
+        "availability": [
+            {
+                "id": "avail_static_trapistan_sunday",
+                "creatorClanId": "trapiistan",
+                "creatorClanName": "TRAPISTAN",
+                "verificationStatus": "unverified",
+                "status": "open",
+                "timeWindow": "Sunday evening",
+                "targetSize": "40v40-60v60",
+                "warType": "wilderness_multi",
+                "publicRulesSummary": "Returns allowed; multi fight",
+            }
+        ],
+    }
+
+
+def get_public_fight_summary(fight_id: str) -> dict[str, Any] | None:
+    normalized = normalize_clan_id(fight_id)
+    if normalized != "fight-static-example":
+        return None
+    return {
+        "fightId": "fight-static-example",
+        "status": "published",
+        "privacy": "completed sanitized analytics only",
+        "winnerClanId": "trapiistan",
+        "winnerConfidence": "medium",
+        "scoreExplanation": "Example completed-fight analytics; no upcoming intel is exposed.",
+        "overview": {
+            "durationMinutes": 60,
+            "peakParticipants": 100,
+            "thirdPartyInteractions": 0,
+            "observedKills": 0,
+            "observedDeaths": 0,
+            "observedReturns": 0,
+        },
+        "byClan": [],
+        "caveats": ["static_mvp_sample"],
+    }
+
+
 def health() -> dict[str, Any]:
     return {
         "ok": True,

@@ -35,6 +35,27 @@ GET /api/clans/{clanId}
 
 The leaderboard is static/sample-backed until Cosmos DB is provisioned and connected.
 
+## Product direction
+
+The target product is a RuneLite-first clan competition network:
+
+- leaders post fight availability,
+- other leaders apply/accept,
+- confirmed fight terms are locked by both leaders,
+- plugin clients submit batched fight observations,
+- service aggregates kills/deaths/returns/damage/third-party interference,
+- plugin shows compact overview metrics,
+- website shows detailed completed-fight analytics.
+
+Planning docs:
+
+```text
+docs/product-architecture.md
+docs/api-security-traffic-model.md
+docs/api-contract.md
+docs/runelite-plugin-ux.md
+```
+
 ## Free-tier Azure target
 
 ```text
