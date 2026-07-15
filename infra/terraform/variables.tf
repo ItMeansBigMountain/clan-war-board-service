@@ -72,7 +72,15 @@ variable "tags" {
   type        = map(string)
   description = "Common tags applied to resources."
   default = {
-    Project   = "ClanWarBoard"
-    ManagedBy = "Terraform"
+    AppName        = "ClanWarBoard"
+    AppSlug        = "clan-war-board"
+    Project        = "ClanWarBoard"
+    Service        = "clan-war-board"
+    ManagedBy      = "Terraform"
+    DeployedBy     = "HermesAgent"
+    DeploymentTool = "HermesAgent"
+    IaC            = "Terraform"
+    Repository     = "ItMeansBigMountain/clan-war-board-service"
+    CostGuard      = "near-free"
   }
 }
