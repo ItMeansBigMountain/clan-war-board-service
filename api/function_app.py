@@ -5,7 +5,17 @@ try:
 except ImportError:  # Allows unit tests/imports without Azure Functions installed.
     func = None
 
-from leaderboard import get_clan, get_leaderboard, get_public_availability, get_public_fight_summary, health
+from leaderboard import (
+    get_clan,
+    get_clans,
+    get_fight_setup_schema,
+    get_leaderboard,
+    get_past_battles,
+    get_public_availability,
+    get_public_fight_summary,
+    health,
+    search_clans,
+)
 
 
 if func is not None:
@@ -19,6 +29,13 @@ if func is not None:
     def leaderboard_route(req):
         return json_response(get_leaderboard())
 
+    @app.route(route="clans", methods=["GET"])
+    def clans_route(req):
+        query = req.params.get("q") if req.params else None
+        if query:
+            return json_response(search_clans(query))
+        return json_response(get_clans())
+
     @app.route(route="clans/{clanId}", methods=["GET"])
     def clan_route(req):
         clan_id = req.route_params.get("clanId", "")
@@ -31,6 +48,10 @@ if func is not None:
     def availability_route(req):
         return json_response(get_public_availability())
 
+    @app.route(route="public/battles", methods=["GET"])
+    def battles_route(req):
+        return json_response(get_past_battles())
+
     @app.route(route="public/fights/{fightId}/summary", methods=["GET"])
     def fight_summary_route(req):
         fight_id = req.route_params.get("fightId", "")
@@ -38,6 +59,10 @@ if func is not None:
         if summary is None:
             return json_response({"error": "fight_not_found"}, status_code=404)
         return json_response(summary)
+
+    @app.route(route="fight-setup/schema", methods=["GET"])
+    def fight_setup_schema_route(req):
+        return json_response(get_fight_setup_schema())
 
 
 def json_response(payload: dict, status_code: int = 200):
