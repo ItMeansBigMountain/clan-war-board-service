@@ -114,6 +114,12 @@
             </div>
             <div class="panel hero-art" id="hero-art"><div class="caption"><div class="eyebrow">Wilderness fights</div><h2 id="hero-title">Clan battle board</h2><p>Built for leaders who want clear terms before the fight and clear records afterward.</p></div></div>
           </div>
+          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Privacy and performance</div><h2>Public worlds, private player tracking, low-lag sync.</h2><p>Fight worlds are public to bring activity back to the Wilderness. Individual member performance can stay private on the website, and the plugin sends batched war telemetry instead of one request per visible player.</p></div>
+          <div class="grid">
+            <div class="card panel"><h3>Worlds are public</h3><p>Open challenges and completed records can show the world so clans know where action is forming.</p></div>
+            <div class="card panel"><h3>Members control public stats</h3><p>Members can keep their player name off public performance pages while still helping clan-level war scoring.</p></div>
+            <div class="card panel"><h3>Batched uploads</h3><p>The plugin queues local fight events and flushes them in small batches to avoid war-time API spam and client lag.</p></div>
+          </div>
           <div class="page-head" style="margin-top:26px"><div class="eyebrow">Leader agreement</div><h2>Terms every fight should lock before it starts.</h2><p>Both leaders should confirm the same terms before members are rallied. Any change should require both clans to reconfirm.</p></div>
           <div class="panel card"><div class="setup-grid" id="home-setup-grid"></div></div>
           <div class="page-head" style="margin-top:26px"><div class="eyebrow">Direct challenges</div><h2>Leaders can call out a specific clan.</h2><p>Challenge a named clan, send the proposed terms, accept counter-offers, then lock the match when both leaders agree to the same terms hash.</p></div>
@@ -127,7 +133,7 @@
         </section>
 
         <section class="page" data-page="/fights">
-          <div class="page-head"><div class="eyebrow">Open fight board</div><h2>Upcoming clan challenges.</h2><p>Accepted fights reveal sensitive details only to the participating clans. Public pages show enough to find a fair match without exposing worlds or rally plans.</p></div>
+          <div class="page-head"><div class="eyebrow">Open fight board</div><h2>Upcoming clan challenges.</h2><p>Fight worlds are public to help clans find active Wilderness fights. Private leader notes stay with the participating clans until the fight is accepted.</p></div>
           <div id="upcoming-grid"></div>
         </section>
 
