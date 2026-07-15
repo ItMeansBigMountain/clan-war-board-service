@@ -17,8 +17,14 @@ variable "environment" {
 
 variable "location" {
   type        = string
-  description = "Azure region."
+  description = "Primary Azure region for resources."
   default     = "East US"
+}
+
+variable "static_web_app_location" {
+  type        = string
+  description = "Azure Static Web Apps region. Must be one of the regions supported by Microsoft.Web/staticSites."
+  default     = "East US 2"
 }
 
 variable "project_name" {

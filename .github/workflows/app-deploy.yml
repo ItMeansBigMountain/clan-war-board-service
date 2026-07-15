@@ -28,9 +28,6 @@ permissions:
   id-token: write
   contents: read
 
-env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: api
-
 jobs:
   test:
     name: Test API
@@ -51,7 +48,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   deploy-api:
-    name: Deploy Azure Function API
+    name: Deploy Static Web App API
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -67,10 +64,10 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-          AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
+          AZURE_STATIC_WEB_APP_NAME: ${{ vars.AZURE_STATIC_WEB_APP_NAME }}
         run: |
           missing=0
-          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_RESOURCE_GROUP AZURE_FUNCTIONAPP_NAME; do
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_RESOURCE_GROUP AZURE_STATIC_WEB_APP_NAME; do
             if [ -z "${!name}" ]; then
               echo "::error::$name is not set. Configure it as a repository/environment variable before running this workflow."
               missing=1
@@ -88,69 +85,33 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Build Python dependencies into deployment package
+      - name: Get Static Web App deployment token
+        id: swa-token
         shell: bash
         run: |
-          pushd "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}"
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
-          popd
-
-      - name: Create Function App zip
-        shell: bash
-        run: |
-          pushd "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}"
-          zip -r ../api.zip .
-          popd
-
-      - name: Deploy Function App zip
-        shell: bash
-        run: |
-          az functionapp deployment source config-zip \
+          token=$(az staticwebapp secrets list \
+            --name "${{ vars.AZURE_STATIC_WEB_APP_NAME }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --name "${{ vars.AZURE_FUNCTIONAPP_NAME }}" \
-            --src api.zip
+            --query "properties.apiKey" -o tsv)
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Static Web App with managed API
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.swa-token.outputs.token }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: web
+          api_location: api
+          output_location: .
 
       - name: Verify health endpoint
         shell: bash
         run: |
-          url="https://${{ vars.AZURE_FUNCTIONAPP_NAME }}.azurewebsites.net/api/health"
+          hostname=$(az staticwebapp show \
+            --name "${{ vars.AZURE_STATIC_WEB_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "defaultHostname" -o tsv)
+          url="https://${hostname}/api/health"
           echo "Checking $url"
           curl --fail --retry 8 --retry-delay 10 --retry-connrefused "$url"
-
-  deploy-web:
-    name: Deploy Static Web App
-    needs: test
-    if: github.event_name != 'pull_request' && hashFiles('web/package.json') != ''
-    runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'app-dev' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build web
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-
-      - name: Deploy Static Web App
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          action: upload
-          app_location: web
-          output_location: dist
