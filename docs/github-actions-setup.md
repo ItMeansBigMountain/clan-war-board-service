@@ -35,8 +35,18 @@ AZURE_STATIC_WEB_APP_NAME
 Notes:
 
 - `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` are non-secret IDs used for OIDC.
-- `AZURE_RESOURCE_GROUP`, `AZURE_FUNCTIONAPP_NAME`, and `AZURE_STATIC_WEB_APP_NAME` should match Terraform outputs for the target environment.
-- `TFSTATE_*` points at the Terraform backend storage account/container.
+- `TFSTATE_*` points at the Terraform backend storage account/container and is required before the infra workflow can run.
+- `AZURE_RESOURCE_GROUP`, `AZURE_FUNCTIONAPP_NAME`, and `AZURE_STATIC_WEB_APP_NAME` should match Terraform outputs for the target environment and are usually set after infra apply.
+- If these variables are missing, `azure/login` reports `Not all values are present`; the workflows now fail earlier with a clearer preflight error.
+
+Current expected bootstrap state before Azure auth:
+
+```text
+repo variables: empty
+known environments: infra-dev only unless bootstrap has already run
+```
+
+That is normal until the `pim up` Azure bootstrap creates the Entra app/OIDC credentials and writes GitHub variables.
 
 ## Required GitHub Secrets
 

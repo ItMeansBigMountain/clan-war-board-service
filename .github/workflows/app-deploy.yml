@@ -60,6 +60,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Preflight required GitHub variables
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
+        run: |
+          missing=0
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_RESOURCE_GROUP AZURE_FUNCTIONAPP_NAME; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set. Configure it as a repository/environment variable before running this workflow."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Run the infra pipeline first, then set app variables from Terraform outputs."
+            exit 1
+          fi
+
       - name: Azure login via OIDC
         uses: azure/login@v2
         with:
@@ -115,7 +136,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
 
