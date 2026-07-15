@@ -13,6 +13,7 @@ from leaderboard import (
     get_past_battles,
     get_public_availability,
     get_public_fight_summary,
+    get_theme_assets,
     health,
     search_clans,
 )
@@ -63,6 +64,10 @@ if func is not None:
     @app.route(route="fight-setup/schema", methods=["GET"])
     def fight_setup_schema_route(req):
         return json_response(get_fight_setup_schema())
+
+    @app.route(route="theme/assets", methods=["GET"])
+    def theme_assets_route(req):
+        return json_response(get_theme_assets())
 
 
 def json_response(payload: dict, status_code: int = 200):
