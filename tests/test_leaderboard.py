@@ -21,6 +21,7 @@ from leaderboard import (
     infer_group_classification,
     public_group,
     search_clans,
+    submit_telemetry_batch,
     wom_import_plan,
 )
 
@@ -147,6 +148,16 @@ class LeaderboardTests(unittest.TestCase):
         self.assertIn("completed fight", payload["source"])
         self.assertEqual(payload["standings"][0]["rating"], None)
         self.assertEqual(payload["standings"][0]["record"]["wins"], 0)
+    def test_telemetry_batch_privacy_and_public_world_policy(self):
+        payload = submit_telemetry_batch({"events": [
+            {"type": "damage_dealt", "playerName": "Oyama", "clanName": "TRAPISTAN", "opponentName": "Enemy", "amount": 31, "world": 330, "tick": 10, "timestamp": 123, "playerPublic": False},
+            {"type": "heartbeat", "playerName": "PublicGuy", "clanName": "TRAPISTAN", "world": 330, "tick": 11, "timestamp": 124, "playerPublic": True},
+        ]})
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["accepted"], 2)
+        self.assertTrue(payload["policy"]["worldIsPublic"])
+        self.assertTrue(payload["policy"]["playerWebsiteTrackingDefaultsPrivate"])
+        self.assertEqual(payload["maxBatch"], 50)
 
 
 if __name__ == "__main__":

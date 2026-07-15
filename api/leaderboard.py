@@ -346,6 +346,48 @@ def get_competitive_leaderboard() -> dict[str, Any]:
         "standings": standings,
     }
 
+def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[str, str] | None = None) -> dict[str, Any]:
+    payload = payload or {}
+    events = payload.get("events") if isinstance(payload, dict) else []
+    if not isinstance(events, list):
+        return {"ok": False, "error": "events_must_be_array", "accepted": 0}
+    max_batch = 50
+    accepted_events = []
+    for event in events[:max_batch]:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type not in {"heartbeat", "damage_dealt", "damage_taken", "death", "kill_candidate", "return", "location_sample", "third_party_damage"}:
+            continue
+        accepted_events.append(
+            {
+                "type": event_type,
+                "playerPublic": bool(event.get("playerPublic", False)),
+                "publicPlayerName": event.get("playerName") if bool(event.get("playerPublic", False)) else None,
+                "clanName": event.get("clanName"),
+                "opponentName": event.get("opponentName"),
+                "amount": int(event.get("amount") or 0),
+                "world": int(event.get("world") or 0),
+                "tick": int(event.get("tick") or 0),
+                "timestamp": int(event.get("timestamp") or 0),
+            }
+        )
+    return {
+        "ok": True,
+        "accepted": len(accepted_events),
+        "rejected": max(0, len(events) - len(accepted_events)),
+        "maxBatch": max_batch,
+        "policy": {
+            "worldIsPublic": True,
+            "playerWebsiteTrackingDefaultsPrivate": True,
+            "recommendedClientFlushSeconds": 10,
+            "recommendedMaxEventsPerBatch": 50,
+            "notes": "The server accepts batched telemetry so large wars do not generate one API request per visible player or per frame.",
+        },
+        "stored": "ephemeral-validation-only-until-cosmos-ingestion-is-enabled",
+    }
+
+
 def health() -> dict[str, Any]:
     return {
         "ok": True,

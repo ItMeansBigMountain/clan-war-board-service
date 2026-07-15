@@ -19,6 +19,7 @@ from leaderboard import (
     get_win_judging_system,
     health,
     search_clans,
+    submit_telemetry_batch,
 )
 
 
@@ -79,6 +80,15 @@ if func is not None:
     @app.route(route="theme/assets", methods=["GET"])
     def theme_assets_route(req):
         return json_response(get_theme_assets())
+
+    @app.route(route="plugin/events/batch", methods=["POST"])
+    def telemetry_batch_route(req):
+        try:
+            payload = req.get_json()
+        except Exception:
+            payload = None
+        result = submit_telemetry_batch(payload, dict(req.headers or {}))
+        return json_response(result, status_code=202 if result.get("ok") else 400)
 
 
 def json_response(payload: dict, status_code: int = 200):
