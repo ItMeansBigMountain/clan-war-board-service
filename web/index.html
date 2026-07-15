@@ -3,27 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Clan War Board | OSRS Clan Battles</title>
+    <title>Clan War Board | Old School RuneScape Clan Battles</title>
     <style>
       :root {
         --body-border: #94866d;
-        --body-dark: #b8a282;
-        --body-mid: #d0bd97;
-        --body-light: #d8ccb4;
         --body-main: #e2dbc8;
         --body-bg: #c0a886;
         --button-border: #3c352a;
         --button-dark: #18140c;
         --button-light: #3a301d;
-        --osrs-brown: #605443;
         --link: #936039;
         --old-brick: #9f261e;
         --gold: #f9d000;
         --ink: #241c12;
         --muted: #5f513f;
+        --panel: #d8ccb4;
       }
       * { box-sizing: border-box; }
-      html { scroll-behavior: smooth; }
       body {
         margin: 0;
         color: var(--ink);
@@ -32,43 +28,44 @@
           radial-gradient(circle at 86% 0%, rgba(128, 28, 19, 0.18), transparent 28rem),
           linear-gradient(180deg, #3a301d 0%, var(--body-bg) 28%, #8a765a 100%);
         font-family: "IBM Plex Sans", Georgia, system-ui, sans-serif;
+        min-height: 100vh;
       }
       body::before {
         content: "";
         position: fixed;
         inset: 0;
-        background-image:
-          linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+        background-image: linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
         background-size: 28px 28px;
         pointer-events: none;
       }
       a { color: var(--link); font-weight: 800; }
       .shell { width: min(1180px, calc(100% - 28px)); margin: 0 auto; position: relative; }
       header { padding: 24px 0 16px; display: flex; justify-content: space-between; align-items: center; gap: 20px; }
-      .brand { color: #f9ecd0; display: flex; align-items: center; gap: 12px; font-family: Georgia, serif; font-size: 25px; font-weight: 900; text-shadow: 0 2px #120d07; }
+      .brand { color: #f9ecd0; display: flex; align-items: center; gap: 12px; font-family: Georgia, serif; font-size: 25px; font-weight: 900; text-shadow: 0 2px #120d07; text-decoration: none; }
       .mark { width: 46px; height: 46px; border: 2px solid #18140c; box-shadow: inset 0 0 0 2px #7a6646, 0 8px 22px rgba(0,0,0,.35); background: linear-gradient(135deg, #9f261e, #18140c 70%); display: grid; place-items: center; border-radius: 4px; }
       nav { display: flex; gap: 10px; flex-wrap: wrap; }
       nav a, .btn { text-decoration: none; color: #f7ead0; background: linear-gradient(#4a3d28, #18140c); border: 2px solid var(--button-border); box-shadow: inset 0 1px rgba(255,255,255,.15), 0 3px 0 #090704; padding: 10px 13px; border-radius: 3px; font-weight: 900; cursor: pointer; }
-      .hero { display: grid; grid-template-columns: 1.05fr .95fr; gap: 20px; padding: 36px 0 22px; align-items: stretch; }
+      nav a.active { outline: 2px solid var(--gold); }
       .panel { background: var(--body-main); border: 3px solid var(--body-border); box-shadow: 0 0 0 3px #4a3d28, 0 18px 60px rgba(0,0,0,.35); border-radius: 3px; }
-      .hero-copy { padding: 30px; background: rgba(226,219,200,.93); }
+      .hero { display: grid; grid-template-columns: 1.05fr .95fr; gap: 20px; padding: 36px 0 22px; align-items: stretch; }
+      .hero-copy { padding: 30px; background: rgba(226,219,200,.94); }
+      .hero-art { min-height: 390px; background: #18140c center/cover no-repeat; position: relative; overflow: hidden; }
+      .hero-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(24,20,12,.12), rgba(24,20,12,.78)); }
+      .hero-art .caption { position: absolute; z-index: 1; left: 18px; right: 18px; bottom: 18px; color: #f8ead0; text-shadow: 0 2px #000; }
       .eyebrow { color: var(--old-brick); font-weight: 950; text-transform: uppercase; letter-spacing: .13em; font-size: 12px; }
       h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: #2a1c0e; margin: 0; }
       h1 { font-size: clamp(40px, 7vw, 78px); line-height: .95; text-shadow: 0 1px #f8ecd3; }
       h2 { font-size: clamp(28px, 4vw, 44px); }
       h3 { font-size: 23px; }
       p { line-height: 1.65; color: var(--muted); }
-      .hero-art { min-height: 390px; background: #18140c center/cover no-repeat; position: relative; overflow: hidden; }
-      .hero-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(24,20,12,.12), rgba(24,20,12,.78)); }
-      .hero-art .caption { position: absolute; z-index: 1; left: 18px; right: 18px; bottom: 18px; color: #f8ead0; text-shadow: 0 2px #000; }
-      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 20px; }
-      .stat, .card { background: #d8ccb4; border: 2px solid var(--body-border); box-shadow: inset 0 0 0 1px rgba(255,255,255,.4); padding: 14px; }
-      .stat b { display: block; font-size: 28px; font-family: Georgia, serif; }
-      section { padding: 24px 0; }
-      .section-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+      main { padding-bottom: 24px; }
+      .page { display: none; padding: 26px 0 34px; }
+      .page.active { display: block; }
+      .page-head { margin-bottom: 18px; max-width: 820px; }
       .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-      .split { display: grid; grid-template-columns: .9fr 1.1fr; gap: 14px; }
+      .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 20px; }
+      .stat, .card { background: var(--panel); border: 2px solid var(--body-border); box-shadow: inset 0 0 0 1px rgba(255,255,255,.4); padding: 14px; }
+      .stat b { display: block; font-size: 28px; font-family: Georgia, serif; }
       .pill { display: inline-flex; align-items: center; margin: 4px 4px 4px 0; padding: 5px 8px; border: 1px solid #7a6646; background: #eee3c9; color: #3b2b1a; font-size: 12px; font-weight: 900; }
       .pill.red { background: #fbc0ba; border-color: #9f261e; }
       .pill.green { background: #c3e8a3; border-color: #3c780a; }
@@ -81,78 +78,98 @@
       .empty { text-align: center; padding: 32px; background: #eee3c9; border: 2px dashed #94866d; color: var(--muted); }
       .clan-img { height: 130px; margin: -14px -14px 12px; background: #3a301d center/cover no-repeat; border-bottom: 2px solid var(--body-border); }
       .setup-grid { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }
-      footer { color: #f8ead0; text-shadow: 0 2px #18140c; padding: 40px 0 70px; }
-      @media (max-width: 900px) { .hero, .grid, .split { grid-template-columns: 1fr; } .stats, .setup-grid { grid-template-columns: repeat(2,1fr); } header { flex-direction: column; align-items: flex-start; } }
+      footer { color: #f8ead0; text-shadow: 0 2px #18140c; padding: 34px 0 60px; }
+      @media (max-width: 900px) { .hero, .grid { grid-template-columns: 1fr; } .stats, .setup-grid { grid-template-columns: repeat(2,1fr); } header { flex-direction: column; align-items: flex-start; } }
       @media (max-width: 560px) { .stats, .setup-grid, .search { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
     <div class="shell">
       <header>
-        <div class="brand"><div class="mark">⚔</div><span>Clan War Board</span></div>
-        <nav><a href="#clans">Clans</a><a href="#fights">Fights</a><a href="#results">Results</a><a href="#terms">Match terms</a></nav>
+        <a class="brand" href="/"><div class="mark">⚔</div><span>Clan War Board</span></a>
+        <nav>
+          <a data-route="/" href="/">Home</a>
+          <a data-route="/clans" href="/clans">Clans</a>
+          <a data-route="/fights" href="/fights">Open fights</a>
+          <a data-route="/results" href="/results">Results</a>
+          <a data-route="/match-terms" href="/match-terms">Match terms</a>
+        </nav>
       </header>
+
       <main>
-        <section class="hero">
-          <div class="panel hero-copy">
-            <div class="eyebrow">Old School RuneScape clan competition</div>
-            <h1>Real clans. Real rosters. No fake war data.</h1>
-            <p>Browse live Wise Old Man groups, inspect clan classifications from public metadata and member builds, and prepare RuneLite leader-posted fights where both sides agree to location, world, time, combat range, and fight length.</p>
-            <div class="stats">
-              <div class="stat"><b id="stat-clans">—</b><span>WOM clans loaded</span></div>
-              <div class="stat"><b id="stat-members">—</b><span>public members</span></div>
-              <div class="stat"><b id="stat-fights">—</b><span>real open fights</span></div>
-              <div class="stat"><b id="stat-results">—</b><span>real results</span></div>
+        <section class="page" data-page="/">
+          <div class="hero">
+            <div class="panel hero-copy">
+              <div class="eyebrow">Old School RuneScape clan competition</div>
+              <h1>Challenge clans. Agree the terms. Settle it in the Wilderness.</h1>
+              <p>Clan War Board is a competitive home for Old School RuneScape clans: discover active groups, review clan styles and rosters, schedule matched fights, and publish clean post-fight records.</p>
+              <div class="stats">
+                <div class="stat"><b id="stat-clans">—</b><span>clans indexed</span></div>
+                <div class="stat"><b id="stat-members">—</b><span>public members</span></div>
+                <div class="stat"><b id="stat-fights">—</b><span>open challenges</span></div>
+              </div>
             </div>
+            <div class="panel hero-art" id="hero-art"><div class="caption"><div class="eyebrow">Wilderness fights</div><h2 id="hero-title">Clan battle board</h2><p>Built for leaders who want clear terms before the fight and clear records afterward.</p></div></div>
           </div>
-          <div class="panel hero-art" id="hero-art"><div class="caption"><div class="eyebrow">OSRS Wiki imagery</div><h2 id="hero-title">Wilderness war board</h2><p id="hero-subtitle">Theme imagery and colors are sourced from public OSRS Wiki/theme APIs.</p></div></div>
         </section>
 
-        <section id="clans">
-          <div class="section-head"><div><div class="eyebrow">Live Wise Old Man data</div><h2>Clan lookup</h2></div><a href="/api/clans">API</a></div>
-          <div class="search"><input id="clan-search" placeholder="Search WOM clans: pure, pvp, iron, clan name…" /><button class="btn" id="search-button">Search</button></div>
+        <section class="page" data-page="/clans">
+          <div class="page-head"><div class="eyebrow">Clan directory</div><h2>Find an opponent worth fighting.</h2><p>Search public clan profiles by name, clan chat, style, or description. Clan classifications are inferred from public group information and available roster metadata.</p></div>
+          <div class="search"><input id="clan-search" placeholder="Search clans: pure, pvp, iron, clan name…" /><button class="btn" id="search-button">Search</button></div>
           <div class="grid" id="clan-grid"></div>
         </section>
 
-        <section id="fights">
-          <div class="section-head"><div><div class="eyebrow">RuneLite leader submissions</div><h2>Upcoming fights</h2></div><a href="/api/public/availability">API</a></div>
+        <section class="page" data-page="/fights">
+          <div class="page-head"><div class="eyebrow">Open fight board</div><h2>Upcoming clan challenges.</h2><p>Accepted fights reveal sensitive details only to the participating clans. Public pages show enough to find a fair match without exposing worlds or rally plans.</p></div>
           <div id="upcoming-grid"></div>
         </section>
 
-        <section id="results">
-          <div class="section-head"><div><div class="eyebrow">Telemetry published after completion</div><h2>Battle results</h2></div><a href="/api/public/battles">API</a></div>
+        <section class="page" data-page="/results">
+          <div class="page-head"><div class="eyebrow">War records</div><h2>Completed battle results.</h2><p>Published results focus on what matters: duration, participants, kills, returns, pressure, interference, and the agreed outcome.</p></div>
           <div id="battle-list"></div>
         </section>
 
-        <section id="terms">
-          <div class="section-head"><div><div class="eyebrow">Leader agreement</div><h2>Required fight setup terms</h2></div><a href="/api/fight-setup/schema">API</a></div>
-          <div class="panel card"><p>These are the terms both clan leaders must accept. Any change should invalidate the agreement hash and require reconfirmation.</p><div class="setup-grid" id="setup-grid"></div></div>
+        <section class="page" data-page="/match-terms">
+          <div class="page-head"><div class="eyebrow">Leader agreement</div><h2>Terms every fight should lock before it starts.</h2><p>Both leaders should confirm the same terms before members are rallied. Any change should require both clans to reconfirm.</p></div>
+          <div class="panel card"><div class="setup-grid" id="setup-grid"></div></div>
         </section>
       </main>
-      <footer>Clan War Board uses live Wise Old Man public group data and OSRS Wiki theme/image APIs. Scheduled fights remain empty until RuneLite leader write endpoints are enabled.</footer>
+
+      <footer>Clan War Board is an independent OSRS clan-war service. Old School RuneScape names and imagery belong to their respective owners.</footer>
     </div>
 
     <script>
       const $ = (id) => document.getElementById(id);
       const fmt = new Intl.NumberFormat();
+      let latestClans = [];
       const pill = (text, cls='') => `<span class="pill ${cls}">${text}</span>`;
       async function getJson(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); }
+      function route() {
+        const allowed = ['/', '/clans', '/fights', '/results', '/match-terms'];
+        return allowed.includes(location.pathname) ? location.pathname : '/';
+      }
+      function showPage() {
+        const current = route();
+        document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.dataset.page === current));
+        document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.dataset.route === current));
+      }
       function clanCard(c) {
         const img = c.profileImage || c.bannerImage || '';
         return `<article class="card panel">
           ${img ? `<div class="clan-img" style="background-image:url('${img.replaceAll("'", "%27")}')"></div>` : ''}
           <h3>${c.clan_name || 'Unnamed clan'}</h3>
-          <div>${pill(c.clan_type || 'OSRS Clan', 'gold')}${c.verified ? pill('WOM verified','green') : pill('unverified','red')}${c.homeworld ? pill(`W${c.homeworld}`) : ''}</div>
-          <p>${c.description || 'No public group description provided.'}</p>
-          <div class="row"><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div><div class="metric"><strong>${fmt.format(c.womScore || 0)}</strong>WOM score</div><div class="metric"><strong>${Math.round((c.classification?.confidence || 0) * 100)}%</strong>type confidence</div></div>
-          <a class="btn" style="display:inline-flex;margin-top:12px" href="/api/clans/${c.womGroupId || c.clan_id}">View raw profile</a>
+          <div>${pill(c.clan_type || 'OSRS Clan', 'gold')}${c.verified ? pill('verified','green') : ''}${c.homeworld ? pill(`W${c.homeworld}`) : ''}</div>
+          <p>${c.description || 'No public description provided.'}</p>
+          <div class="row"><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div><div class="metric"><strong>${fmt.format(c.womScore || 0)}</strong>standing</div><div class="metric"><strong>${Math.round((c.classification?.confidence || 0) * 100)}%</strong>style confidence</div></div>
+          <a class="btn" style="display:inline-flex;margin-top:12px" href="/clans?selected=${encodeURIComponent(c.womGroupId || c.clan_id)}">View clan</a>
         </article>`;
       }
-      function emptyCard(text) { return `<div class="empty panel">${text}</div>`; }
+      function emptyCard(title, text) { return `<div class="empty panel"><h3>${title}</h3><p>${text}</p></div>`; }
       function renderClans(clans) {
-        $('clan-grid').innerHTML = clans.length ? clans.slice(0, 24).map(clanCard).join('') : emptyCard('No WOM clans returned for this search.');
-        $('stat-clans').textContent = clans.length;
-        $('stat-members').textContent = fmt.format(clans.reduce((n,c)=>n+(c.member_count||0),0));
+        latestClans = clans || [];
+        $('clan-grid').innerHTML = latestClans.length ? latestClans.slice(0, 24).map(clanCard).join('') : emptyCard('No clans found', 'Try a different clan name or style.');
+        $('stat-clans').textContent = fmt.format(latestClans.length);
+        $('stat-members').textContent = fmt.format(latestClans.reduce((n,c)=>n+(c.member_count||0),0));
       }
       async function searchClans() {
         const q = $('clan-search').value.trim();
@@ -160,19 +177,28 @@
         renderClans(data.results || data.clans || []);
       }
       async function load() {
+        showPage();
         const [clans, availability, battles, schema, theme] = await Promise.all([getJson('/api/clans'), getJson('/api/public/availability'), getJson('/api/public/battles'), getJson('/api/fight-setup/schema'), getJson('/api/theme/assets')]);
         const hero = theme.images?.[0];
         if (hero?.source) { $('hero-art').style.backgroundImage = `url('${hero.source}')`; $('hero-title').textContent = hero.title; }
         renderClans(clans.clans || []);
-        $('stat-fights').textContent = (availability.availability || []).length;
-        $('stat-results').textContent = (battles.battles || []).length;
-        $('upcoming-grid').innerHTML = availability.availability?.length ? availability.availability.map(f => `<div class="card panel"><h3>${f.creatorClanName}</h3></div>`).join('') : emptyCard(availability.emptyState);
-        $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${b.winnerClanName || b.fightId}</h3></div>`).join('') : emptyCard(battles.emptyState);
+        $('stat-fights').textContent = fmt.format((availability.availability || []).length);
+        $('upcoming-grid').innerHTML = availability.availability?.length ? availability.availability.map(f => `<div class="card panel"><h3>${f.creatorClanName}</h3></div>`).join('') : emptyCard('No open challenges yet', 'When clan leaders post public fight availability, challenges will appear here.');
+        $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${b.winnerClanName || b.fightId}</h3></div>`).join('') : emptyCard('No published results yet', 'Completed battle records will appear here after both sides have fought and the result is ready to publish.');
         $('setup-grid').innerHTML = schema.requiredFields.map(f => `<div class="stat"><b>${f.label}</b><span>${f.privacy}</span></div>`).join('');
       }
+      document.querySelectorAll('a[href^="/"]').forEach(a => {
+        a.addEventListener('click', e => {
+          const url = new URL(a.href);
+          if (url.origin === location.origin && !url.search) {
+            e.preventDefault(); history.pushState({}, '', url.pathname); showPage();
+          }
+        });
+      });
+      window.addEventListener('popstate', showPage);
       $('search-button').addEventListener('click', searchClans);
       $('clan-search').addEventListener('keydown', e => { if (e.key === 'Enter') searchClans(); });
-      load().catch(e => { console.error(e); $('clan-grid').innerHTML = emptyCard(e.message); });
+      load().catch(e => { console.error(e); $('clan-grid').innerHTML = emptyCard('The war board could not load', 'Please refresh and try again.'); });
     </script>
   </body>
 </html>
