@@ -92,7 +92,6 @@
           <a data-route="/clans" href="/clans">Clans</a>
           <a data-route="/fights" href="/fights">Open fights</a>
           <a data-route="/results" href="/results">Results</a>
-          <a data-route="/match-terms" href="/match-terms">Match terms</a>
         </nav>
       </header>
 
@@ -111,6 +110,8 @@
             </div>
             <div class="panel hero-art" id="hero-art"><div class="caption"><div class="eyebrow">Wilderness fights</div><h2 id="hero-title">Clan battle board</h2><p>Built for leaders who want clear terms before the fight and clear records afterward.</p></div></div>
           </div>
+          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Leader agreement</div><h2>Terms every fight should lock before it starts.</h2><p>Both leaders should confirm the same terms before members are rallied. Any change should require both clans to reconfirm.</p></div>
+          <div class="panel card"><div class="setup-grid" id="home-setup-grid"></div></div>
         </section>
 
         <section class="page" data-page="/clans">
@@ -129,10 +130,6 @@
           <div id="battle-list"></div>
         </section>
 
-        <section class="page" data-page="/match-terms">
-          <div class="page-head"><div class="eyebrow">Leader agreement</div><h2>Terms every fight should lock before it starts.</h2><p>Both leaders should confirm the same terms before members are rallied. Any change should require both clans to reconfirm.</p></div>
-          <div class="panel card"><div class="setup-grid" id="setup-grid"></div></div>
-        </section>
       </main>
 
       <footer>Clan War Board is an independent OSRS clan-war service. Old School RuneScape names and imagery belong to their respective owners.</footer>
@@ -145,7 +142,7 @@
       const pill = (text, cls='') => `<span class="pill ${cls}">${text}</span>`;
       async function getJson(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); }
       function route() {
-        const allowed = ['/', '/clans', '/fights', '/results', '/match-terms'];
+        const allowed = ['/', '/clans', '/fights', '/results'];
         return allowed.includes(location.pathname) ? location.pathname : '/';
       }
       function showPage() {
@@ -185,7 +182,7 @@
         $('stat-fights').textContent = fmt.format((availability.availability || []).length);
         $('upcoming-grid').innerHTML = availability.availability?.length ? availability.availability.map(f => `<div class="card panel"><h3>${f.creatorClanName}</h3></div>`).join('') : emptyCard('No open challenges yet', 'When clan leaders post public fight availability, challenges will appear here.');
         $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${b.winnerClanName || b.fightId}</h3></div>`).join('') : emptyCard('No published results yet', 'Completed battle records will appear here after both sides have fought and the result is ready to publish.');
-        $('setup-grid').innerHTML = schema.requiredFields.map(f => `<div class="stat"><b>${f.label}</b><span>${f.privacy}</span></div>`).join('');
+        $('home-setup-grid').innerHTML = schema.requiredFields.map(f => `<div class="stat"><b>${f.label}</b><span>${f.privacy}</span></div>`).join('');
       }
       document.querySelectorAll('a[href^="/"]').forEach(a => {
         a.addEventListener('click', e => {
