@@ -5,14 +5,14 @@ on:
     paths:
       - 'api/**'
       - 'web/**'
-      - 'tests/**'
+      - 'staticwebapp.config.json'
       - '.github/workflows/app-deploy.yml'
   push:
     branches: [main]
     paths:
       - 'api/**'
       - 'web/**'
-      - 'tests/**'
+      - 'staticwebapp.config.json'
       - '.github/workflows/app-deploy.yml'
   workflow_dispatch:
     inputs:
