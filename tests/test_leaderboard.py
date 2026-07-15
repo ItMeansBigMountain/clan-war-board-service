@@ -7,13 +7,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from leaderboard import (
     fetch_wom_groups,
+    get_challenge_system,
     get_clan,
+    get_competitive_leaderboard,
     get_fight_setup_schema,
     get_leaderboard,
     get_past_battles,
     get_public_availability,
     get_public_fight_summary,
     get_theme_assets,
+    get_win_judging_system,
     health,
     infer_group_classification,
     public_group,
@@ -124,7 +127,26 @@ class LeaderboardTests(unittest.TestCase):
         assets = get_theme_assets()
         self.assertEqual(assets["source"], "OSRS Wiki MediaWiki API")
         self.assertGreaterEqual(len(assets["images"]), 1)
-        self.assertIn("parchment", assets["theme"]["colors"])
+        self.assertIn("charcoal", assets["theme"]["colors"])
+
+    def test_judging_system_defines_winner_signals(self):
+        system = get_win_judging_system()
+        names = {row["name"] for row in system["winnerSignals"]}
+        self.assertTrue({"kills", "deaths", "returns", "durationControl", "damagePressure"}.issubset(names))
+        self.assertIn("leader", " ".join(system["requiredBeforeFight"]))
+
+    def test_challenge_system_has_direct_challenge(self):
+        system = get_challenge_system()
+        actions = " ".join(row["name"] for row in system["leaderActions"])
+        self.assertIn("Direct challenge", actions)
+        self.assertGreaterEqual(len(system["directChallengeRequiredFields"]), 5)
+
+    @patch("leaderboard.cached_json", side_effect=fake_cached_json)
+    def test_competitive_leaderboard_is_unrated_until_results(self, _):
+        payload = get_competitive_leaderboard()
+        self.assertIn("completed fight", payload["source"])
+        self.assertEqual(payload["standings"][0]["rating"], None)
+        self.assertEqual(payload["standings"][0]["record"]["wins"], 0)
 
 
 if __name__ == "__main__":

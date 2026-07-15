@@ -6,14 +6,17 @@ except ImportError:  # Allows unit tests/imports without Azure Functions install
     func = None
 
 from leaderboard import (
+    get_challenge_system,
     get_clan,
     get_clans,
+    get_competitive_leaderboard,
     get_fight_setup_schema,
     get_leaderboard,
     get_past_battles,
     get_public_availability,
     get_public_fight_summary,
     get_theme_assets,
+    get_win_judging_system,
     health,
     search_clans,
 )
@@ -28,7 +31,15 @@ if func is not None:
 
     @app.route(route="leaderboard", methods=["GET"])
     def leaderboard_route(req):
-        return json_response(get_leaderboard())
+        return json_response(get_competitive_leaderboard())
+
+    @app.route(route="challenge-system", methods=["GET"])
+    def challenge_system_route(req):
+        return json_response(get_challenge_system())
+
+    @app.route(route="judging-system", methods=["GET"])
+    def judging_system_route(req):
+        return json_response(get_win_judging_system())
 
     @app.route(route="clans", methods=["GET"])
     def clans_route(req):

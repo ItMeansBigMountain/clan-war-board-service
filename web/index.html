@@ -6,27 +6,27 @@
     <title>Clan War Board | Old School RuneScape Clan Battles</title>
     <style>
       :root {
-        --body-border: #94866d;
-        --body-main: #e2dbc8;
-        --body-bg: #c0a886;
-        --button-border: #3c352a;
-        --button-dark: #18140c;
-        --button-light: #3a301d;
-        --link: #936039;
-        --old-brick: #9f261e;
-        --gold: #f9d000;
-        --ink: #241c12;
-        --muted: #5f513f;
-        --panel: #d8ccb4;
+        --body-border: #5f5a50;
+        --body-main: #c7b28c;
+        --body-bg: #191b14;
+        --button-border: #1b1712;
+        --button-dark: #0d0b09;
+        --button-light: #30271d;
+        --link: #d7aa35;
+        --old-brick: #a83b22;
+        --gold: #d7aa35;
+        --ink: #1d1710;
+        --muted: #4b4034;
+        --panel: #bca782;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         color: var(--ink);
         background:
-          radial-gradient(circle at 18% 8%, rgba(249, 208, 0, 0.18), transparent 24rem),
-          radial-gradient(circle at 86% 0%, rgba(128, 28, 19, 0.18), transparent 28rem),
-          linear-gradient(180deg, #3a301d 0%, var(--body-bg) 28%, #8a765a 100%);
+          radial-gradient(circle at 14% 8%, rgba(168, 59, 34, 0.28), transparent 20rem),
+          radial-gradient(circle at 82% 2%, rgba(75, 74, 67, 0.48), transparent 27rem),
+          linear-gradient(180deg, #090807 0%, #191b14 38%, #3f3428 100%);
         font-family: "IBM Plex Sans", Georgia, system-ui, sans-serif;
         min-height: 100vh;
       }
@@ -91,6 +91,7 @@
           <a data-route="/" href="/">Home</a>
           <a data-route="/clans" href="/clans">Clans</a>
           <a data-route="/fights" href="/fights">Open fights</a>
+          <a data-route="/leaderboard" href="/leaderboard">Leaderboard</a>
           <a data-route="/results" href="/results">Results</a>
         </nav>
       </header>
@@ -112,6 +113,8 @@
           </div>
           <div class="page-head" style="margin-top:26px"><div class="eyebrow">Leader agreement</div><h2>Terms every fight should lock before it starts.</h2><p>Both leaders should confirm the same terms before members are rallied. Any change should require both clans to reconfirm.</p></div>
           <div class="panel card"><div class="setup-grid" id="home-setup-grid"></div></div>
+          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Direct challenges</div><h2>Leaders can call out a specific clan.</h2><p>Challenge a named clan, send the proposed terms, accept counter-offers, then lock the match when both leaders agree to the same terms hash.</p></div>
+          <div class="grid" id="challenge-grid"></div>
         </section>
 
         <section class="page" data-page="/clans">
@@ -123,6 +126,13 @@
         <section class="page" data-page="/fights">
           <div class="page-head"><div class="eyebrow">Open fight board</div><h2>Upcoming clan challenges.</h2><p>Accepted fights reveal sensitive details only to the participating clans. Public pages show enough to find a fair match without exposing worlds or rally plans.</p></div>
           <div id="upcoming-grid"></div>
+        </section>
+
+        <section class="page" data-page="/leaderboard">
+          <div class="page-head"><div class="eyebrow">Competitive table</div><h2>Leaderboard built from confirmed wars.</h2><p>Clans appear here now from public clan data, but ratings stay unrated until completed Clan War Board fights have enough confidence to count.</p></div>
+          <div class="grid" id="leaderboard-grid"></div>
+          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Winner system</div><h2>How Clan War Board decides who won.</h2><p>The winner system weighs kills, deaths, returns, location control, pressure, and third-party interference against the terms both leaders accepted.</p></div>
+          <div class="grid" id="judging-grid"></div>
         </section>
 
         <section class="page" data-page="/results">
@@ -142,7 +152,7 @@
       const pill = (text, cls='') => `<span class="pill ${cls}">${text}</span>`;
       async function getJson(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); }
       function route() {
-        const allowed = ['/', '/clans', '/fights', '/results'];
+        const allowed = ['/', '/clans', '/fights', '/leaderboard', '/results'];
         return allowed.includes(location.pathname) ? location.pathname : '/';
       }
       function showPage() {
@@ -175,7 +185,7 @@
       }
       async function load() {
         showPage();
-        const [clans, availability, battles, schema, theme] = await Promise.all([getJson('/api/clans'), getJson('/api/public/availability'), getJson('/api/public/battles'), getJson('/api/fight-setup/schema'), getJson('/api/theme/assets')]);
+        const [clans, availability, battles, schema, theme, leaderboard, challenge, judging] = await Promise.all([getJson('/api/clans'), getJson('/api/public/availability'), getJson('/api/public/battles'), getJson('/api/fight-setup/schema'), getJson('/api/theme/assets'), getJson('/api/leaderboard'), getJson('/api/challenge-system'), getJson('/api/judging-system')]);
         const hero = theme.images?.[0];
         if (hero?.source) { $('hero-art').style.backgroundImage = `url('${hero.source}')`; $('hero-title').textContent = hero.title; }
         renderClans(clans.clans || []);
@@ -183,6 +193,9 @@
         $('upcoming-grid').innerHTML = availability.availability?.length ? availability.availability.map(f => `<div class="card panel"><h3>${f.creatorClanName}</h3></div>`).join('') : emptyCard('No open challenges yet', 'When clan leaders post public fight availability, challenges will appear here.');
         $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${b.winnerClanName || b.fightId}</h3></div>`).join('') : emptyCard('No published results yet', 'Completed battle records will appear here after both sides have fought and the result is ready to publish.');
         $('home-setup-grid').innerHTML = schema.requiredFields.map(f => `<div class="stat"><b>${f.label}</b><span>${f.privacy}</span></div>`).join('');
+        $('challenge-grid').innerHTML = challenge.leaderActions.map(a => `<div class="card panel"><h3>${a.name}</h3><p>${a.description}</p></div>`).join('');
+        $('leaderboard-grid').innerHTML = leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(c.clan_type || 'OSRS Clan', 'gold')}${pill(c.ratingStatus.replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('');
+        $('judging-grid').innerHTML = judging.winnerSignals.map(s => `<div class="card panel"><h3>${s.name}</h3><div>${pill(`${s.weight} weight`, s.weight < 0 ? 'red' : 'green')}</div><p>${s.description}</p></div>`).join('');
       }
       document.querySelectorAll('a[href^="/"]').forEach(a => {
         a.addEventListener('click', e => {

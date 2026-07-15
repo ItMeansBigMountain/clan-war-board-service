@@ -85,16 +85,15 @@ def get_theme_assets() -> dict[str, Any]:
         "generatedAt": utc_now_iso(),
         "source": "OSRS Wiki MediaWiki API",
         "theme": {
-            "inspiredBy": ["Old School RuneScape website", "Old School RuneScape Wiki theme"],
+            "inspiredBy": ["burned Wilderness forest", "stone castle walls", "Old School RuneScape website", "Old School RuneScape Wiki theme"],
             "colors": {
-                "parchment": "#e2dbc8",
-                "bodyMid": "#d0bd97",
-                "bodyBorder": "#94866d",
-                "buttonDark": "#18140c",
-                "osrsBrown": "#605443",
-                "linkBrown": "#936039",
-                "oldBrick": "#9f261e",
-                "supernovaGold": "#f9d000",
+                "charcoal": "#120f0c",
+                "burntForest": "#1d2116",
+                "stone": "#4d4a43",
+                "darkParchment": "#c7b28c",
+                "bodyBorder": "#6f6658",
+                "ember": "#a83b22",
+                "ashGold": "#d7aa35",
             },
         },
         "images": images,
@@ -275,6 +274,77 @@ def get_fight_setup_schema() -> dict[str, Any]:
         "agreementModel": "Both leaders must accept the exact terms hash. Changes require reconfirmation.",
     }
 
+
+
+def get_win_judging_system() -> dict[str, Any]:
+    return {
+        "generatedAt": utc_now_iso(),
+        "system": "terms_locked_weighted_score",
+        "summary": "Clan War Board should determine winners from the accepted fight terms plus plugin telemetry collected during the scheduled window.",
+        "requiredBeforeFight": [
+            "both leaders accept the same terms hash",
+            "scheduled start and end time are locked",
+            "fight location and world are locked privately",
+            "combat bracket and allowed return rules are locked",
+        ],
+        "winnerSignals": [
+            {"name": "kills", "weight": 35, "description": "confirmed kills by participating clan members during the agreed window"},
+            {"name": "deaths", "weight": -20, "description": "confirmed deaths by participating clan members during the agreed window"},
+            {"name": "returns", "weight": 15, "description": "members returning to the fight after death or bank trips when returns are allowed"},
+            {"name": "durationControl", "weight": 15, "description": "which clan maintained more active members near the agreed location over time"},
+            {"name": "damagePressure", "weight": 10, "description": "damage dealt versus taken among participating members"},
+            {"name": "thirdPartyAdjustment", "weight": 5, "description": "reduces confidence when outside clans or unaffiliated players heavily interfere"},
+        ],
+        "outcomes": [
+            "win",
+            "loss",
+            "draw",
+            "disputed",
+            "no contest",
+        ],
+        "confidenceRules": [
+            "high confidence requires both clans to have enough plugin participants online",
+            "heavy third-party damage lowers confidence",
+            "missing leader confirmation can mark the result disputed",
+            "fight ending early by mutual agreement can publish a no-contest or agreed winner",
+        ],
+        "publicLeaderboardPolicy": "Only completed, non-disputed fights with enough confidence should affect leaderboard rating.",
+    }
+
+def get_challenge_system() -> dict[str, Any]:
+    return {
+        "generatedAt": utc_now_iso(),
+        "leaderActions": [
+            {"name": "Open challenge", "description": "Post availability for any suitable clan to request."},
+            {"name": "Direct challenge", "description": "Choose a specific clan and propose time, world, location, combat range, duration, and rules."},
+            {"name": "Counter offer", "description": "Respond with a different time/world/rules while keeping the same opponent."},
+            {"name": "Accept terms", "description": "Lock both leaders to the same terms hash before members see private rally details."},
+        ],
+        "directChallengeRequiredFields": FIGHT_SETUP_FIELDS,
+        "privateUntilAccepted": ["world", "exact rally location", "leader notes"],
+    }
+
+def get_competitive_leaderboard() -> dict[str, Any]:
+    base = get_leaderboard()
+    standings = []
+    for index, clan in enumerate(base.get("standings", []), start=1):
+        standings.append({
+            "rank": index,
+            "clan_id": clan.get("clan_id"),
+            "clan_name": clan.get("clan_name"),
+            "clan_type": clan.get("clan_type"),
+            "member_count": clan.get("member_count"),
+            "rating": None,
+            "record": {"wins": 0, "losses": 0, "draws": 0, "disputed": 0},
+            "ratingStatus": "unrated_until_completed_clan_war_board_fights",
+            "sourceStanding": clan.get("womScore"),
+        })
+    return {
+        "generatedAt": utc_now_iso(),
+        "source": "Wise Old Man groups plus future Clan War Board completed fight results",
+        "leaderboardPolicy": get_win_judging_system()["publicLeaderboardPolicy"],
+        "standings": standings,
+    }
 
 def health() -> dict[str, Any]:
     return {
