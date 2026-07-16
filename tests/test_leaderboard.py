@@ -5,10 +5,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
+import leaderboard
 from leaderboard import (
-    fetch_wom_groups,
     get_challenge_system,
     get_clan,
+    get_clans,
     get_competitive_leaderboard,
     get_fight_setup_schema,
     get_leaderboard,
@@ -18,96 +19,87 @@ from leaderboard import (
     get_theme_assets,
     get_win_judging_system,
     health,
-    infer_group_classification,
-    public_group,
+    plugin_clan_profile,
     search_clans,
     submit_telemetry_batch,
-    wom_import_plan,
 )
 
-GROUPS = [
-    {
-        "id": 1,
-        "name": "Pure Fury",
-        "clanChat": "Pure Fury",
-        "description": "Pure pvp clan for wilderness fights",
-        "homeworld": 308,
-        "verified": True,
-        "patron": False,
-        "visible": True,
-        "profileImage": "https://img.wiseoldman.net/example.webp",
-        "bannerImage": "https://img.wiseoldman.net/banner.webp",
-        "score": 100,
-        "updatedAt": "2026-07-15T00:00:00.000Z",
-        "memberCount": 3,
-    }
-]
-GROUP_DETAIL = {
-    **GROUPS[0],
-    "memberships": [
-        {"role": "owner", "player": {"displayName": "A Pure", "type": "regular", "build": "pure", "status": "active"}},
-        {"role": "member", "player": {"displayName": "B Pure", "type": "regular", "build": "pure", "status": "active"}},
-        {"role": "member", "player": {"displayName": "C Main", "type": "regular", "build": "main", "status": "active"}},
-    ],
+PLUGIN_CLAN = {
+    "clan_id": "trapistan",
+    "clan_name": "TRAPISTAN",
+    "clan_type": "Main Clan",
+    "member_count": 42,
+    "wins": 3,
+    "losses": 1,
+    "draws": 1,
+    "kills": 88,
+    "deaths": 61,
+    "returns": 37,
+    "damageDealt": 14000,
+    "damageTaken": 11000,
+    "members": [{"displayName": "Private", "public": False}],
+    "pastBattles": [{"fightId": "lava-1", "result": "win"}],
 }
 
 
 def fake_cached_json(url, ttl=300):
-    if "/groups/1" in url:
-        return GROUP_DETAIL
-    if "/groups" in url:
-        return GROUPS
     if "oldschool.runescape.wiki" in url:
         return {"query": {"pages": {"1": {"thumbnail": {"source": "https://oldschool.runescape.wiki/images/thumb/Wilderness.png/900px-Wilderness.png"}}}}}
     raise AssertionError(url)
 
 
 class LeaderboardTests(unittest.TestCase):
+    def setUp(self):
+        leaderboard.PLUGIN_CLANS.clear()
+
     def test_health(self):
         payload = health()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["service"], "clan-war-board-service")
-        self.assertIn("wom-live", payload["storage"])
+        self.assertIn("plugin-registered", payload["storage"])
 
-    @patch("leaderboard.cached_json", side_effect=fake_cached_json)
-    def test_leaderboard_uses_real_wom_shape(self, _):
-        payload = get_leaderboard()
-        self.assertEqual(payload["source"], "Wise Old Man Groups API")
-        self.assertIn("real Wise Old Man", payload["privacy"])
-        self.assertEqual(payload["standings"][0]["clan_name"], "Pure Fury")
-        self.assertEqual(payload["standings"][0]["dataSource"], "Wise Old Man Groups API")
+    def test_clans_are_empty_until_plugin_registration(self):
+        payload = get_clans()
+        self.assertEqual(payload["source"], "Clan War Board plugin")
+        self.assertEqual(payload["clans"], [])
+        self.assertIn("No clans have registered", payload["emptyState"])
 
-    def test_group_classification_uses_member_builds(self):
-        classification = infer_group_classification(GROUP_DETAIL, GROUP_DETAIL["memberships"])
-        self.assertEqual(classification["label"], "Pure Clan")
-        self.assertEqual(classification["source"], "Wise Old Man member builds")
+    def test_plugin_clan_profile_is_fight_history_first(self):
+        profile = plugin_clan_profile(PLUGIN_CLAN, rank=1)
+        self.assertEqual(profile["clan_name"], "TRAPISTAN")
+        self.assertEqual(profile["dataSource"], "Clan War Board plugin")
+        self.assertEqual(profile["member_count"], 42)
+        self.assertEqual(profile["stats"]["wins"], 3)
+        self.assertEqual(profile["stats"]["kills"], 88)
+        self.assertEqual(profile["rank"], 1)
 
-    @patch("leaderboard.cached_json", side_effect=fake_cached_json)
-    def test_clan_lookup_includes_real_members_and_wom_status(self, _):
-        clan = get_clan("1")
-        self.assertIsNotNone(clan)
-        self.assertEqual(clan["clan_id"], "1")
-        self.assertEqual(clan["clan_type"], "Pure Clan")
-        self.assertEqual(clan["wiseOldMan"]["status"], "linked_live")
-        self.assertEqual(len(clan["members"]), 3)
-        self.assertEqual(clan["roleCounts"]["owner"], 1)
-
-    @patch("leaderboard.cached_json", side_effect=fake_cached_json)
-    def test_clan_search(self, _):
-        payload = search_clans("pure")
+    def test_registered_plugin_clan_search_and_lookup(self):
+        leaderboard.PLUGIN_CLANS.append(PLUGIN_CLAN)
+        payload = search_clans("trap")
         self.assertEqual(len(payload["results"]), 1)
-        self.assertEqual(payload["results"][0]["clan_name"], "Pure Fury")
+        clan = get_clan("trapistan")
+        self.assertIsNotNone(clan)
+        self.assertEqual(clan["clanWarBoardData"]["status"], "plugin_registered")
+        self.assertEqual(len(clan["pastBattles"]), 1)
 
-    def test_wom_import_contract_is_privacy_limited(self):
-        plan = wom_import_plan(123)
-        self.assertEqual(plan["source"], "Wise Old Man Groups API")
-        self.assertIn("member list", plan["allowedData"])
-        self.assertIn("upcoming war world", plan["excludedData"])
+    def test_leaderboard_uses_plugin_clans_only(self):
+        leaderboard.PLUGIN_CLANS.append(PLUGIN_CLAN)
+        payload = get_leaderboard()
+        self.assertIn("no external", payload["privacy"])
+        self.assertEqual(payload["standings"][0]["clan_name"], "TRAPISTAN")
+        self.assertEqual(payload["standings"][0]["dataSource"], "Clan War Board plugin")
+
+    @patch("leaderboard.cached_json", side_effect=fake_cached_json)
+    def test_theme_assets_use_wiki_api_only_for_assets(self, _):
+        assets = get_theme_assets()
+        self.assertEqual(assets["source"], "OSRS Wiki MediaWiki API")
+        self.assertGreaterEqual(len(assets["images"]), 1)
+        self.assertIn("charcoal", assets["theme"]["colors"])
 
     def test_public_availability_is_empty_until_real_plugin_posts(self):
         payload = get_public_availability()
         self.assertEqual(payload["availability"], [])
-        self.assertIn("No real scheduled fights", payload["emptyState"])
+        self.assertIn("RuneLite leader submissions", payload["emptyState"])
         fields = " ".join(row["name"] for row in payload["fightSetupFields"])
         self.assertIn("world", fields)
         self.assertIn("durationMinutes", fields)
@@ -123,13 +115,6 @@ class LeaderboardTests(unittest.TestCase):
         names = {row["name"] for row in payload["requiredFields"]}
         self.assertTrue({"location", "world", "scheduledTime", "combatLevelRange", "durationMinutes"}.issubset(names))
 
-    @patch("leaderboard.cached_json", side_effect=fake_cached_json)
-    def test_theme_assets_use_wiki_api(self, _):
-        assets = get_theme_assets()
-        self.assertEqual(assets["source"], "OSRS Wiki MediaWiki API")
-        self.assertGreaterEqual(len(assets["images"]), 1)
-        self.assertIn("charcoal", assets["theme"]["colors"])
-
     def test_judging_system_defines_winner_signals(self):
         system = get_win_judging_system()
         names = {row["name"] for row in system["winnerSignals"]}
@@ -142,12 +127,13 @@ class LeaderboardTests(unittest.TestCase):
         self.assertIn("Direct challenge", actions)
         self.assertGreaterEqual(len(system["directChallengeRequiredFields"]), 5)
 
-    @patch("leaderboard.cached_json", side_effect=fake_cached_json)
-    def test_competitive_leaderboard_is_unrated_until_results(self, _):
+    def test_competitive_leaderboard_is_unrated_until_results(self):
+        leaderboard.PLUGIN_CLANS.append(PLUGIN_CLAN)
         payload = get_competitive_leaderboard()
-        self.assertIn("completed fight", payload["source"])
+        self.assertIn("plugin completed fight", payload["source"])
         self.assertEqual(payload["standings"][0]["rating"], None)
         self.assertEqual(payload["standings"][0]["record"]["wins"], 0)
+
     def test_telemetry_batch_privacy_and_public_world_policy(self):
         payload = submit_telemetry_batch({"events": [
             {"type": "damage_dealt", "playerName": "Oyama", "clanName": "TRAPISTAN", "opponentName": "Enemy", "amount": 31, "world": 330, "tick": 10, "timestamp": 123, "playerPublic": False},

@@ -105,10 +105,10 @@
             <div class="panel hero-copy">
               <div class="eyebrow">Old School RuneScape clan competition</div>
               <h1>Challenge clans. Agree the terms. Settle it in the Wilderness.</h1>
-              <p>Clan War Board is a competitive home for Old School RuneScape clans: discover active groups, review clan styles and rosters, schedule matched fights, and publish clean post-fight records.</p>
+              <p>Clan War Board is a competitive home for clans actually using the RuneLite plugin: challenge active opponents, lock fight terms, track members in war, and publish real fight history.</p>
               <div class="stats">
-                <div class="stat"><b id="stat-clans">—</b><span>clans indexed</span></div>
-                <div class="stat"><b id="stat-members">—</b><span>public members</span></div>
+                <div class="stat"><b id="stat-clans">—</b><span>plugin clans</span></div>
+                <div class="stat"><b id="stat-members">—</b><span>tracked members</span></div>
                 <div class="stat"><b id="stat-fights">—</b><span>open challenges</span></div>
               </div>
             </div>
@@ -127,8 +127,8 @@
         </section>
 
         <section class="page" data-page="/clans">
-          <div class="page-head"><div class="eyebrow">Clan directory</div><h2>Find an opponent worth fighting.</h2><p>Search public clan profiles by name, clan chat, style, or description. Clan classifications are inferred from public group information and available roster metadata.</p></div>
-          <div class="search"><input id="clan-search" placeholder="Search clans: pure, pvp, iron, clan name…" /><button class="btn" id="search-button">Search</button></div>
+          <div class="page-head"><div class="eyebrow">Clan directory</div><h2>Only clans using the plugin show up here.</h2><p>No random external clan extraction. A clan profile appears after its leaders/members use Clan War Board, then the in-depth view becomes fight history, member count, records, kills, deaths, returns, damage, and public stats.</p></div>
+          <div class="search"><input id="clan-search" placeholder="Search registered plugin clans…" /><button class="btn" id="search-button">Search</button></div>
           <div class="grid" id="clan-grid"></div>
         </section>
 
@@ -138,7 +138,7 @@
         </section>
 
         <section class="page" data-page="/leaderboard">
-          <div class="page-head"><div class="eyebrow">Competitive table</div><h2>Leaderboard built from confirmed wars.</h2><p>Clans appear here now from public clan data, but ratings stay unrated until completed Clan War Board fights have enough confidence to count.</p></div>
+          <div class="page-head"><div class="eyebrow">Competitive table</div><h2>Leaderboard built from plugin-confirmed wars.</h2><p>Only clans that use Clan War Board appear here. Ratings stay unrated until completed plugin-tracked fights have enough confidence to count.</p></div>
           <div class="grid" id="leaderboard-grid"></div>
           <div class="page-head" style="margin-top:26px"><div class="eyebrow">Winner system</div><h2>How Clan War Board decides who won.</h2><p>The winner system weighs kills, deaths, returns, location control, pressure, and third-party interference against the terms both leaders accepted.</p></div>
           <div class="grid" id="judging-grid"></div>
@@ -174,16 +174,16 @@
         return `<article class="card panel">
           ${img ? `<div class="clan-img" style="background-image:url('${img.replaceAll("'", "%27")}')"></div>` : ''}
           <h3>${c.clan_name || 'Unnamed clan'}</h3>
-          <div>${pill(c.clan_type || 'OSRS Clan', 'gold')}${c.verified ? pill('verified','green') : ''}${c.homeworld ? pill(`W${c.homeworld}`) : ''}</div>
-          <p>${c.description || 'No public description provided.'}</p>
-          <div class="row"><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div><div class="metric"><strong>${fmt.format(c.womScore || 0)}</strong>standing</div><div class="metric"><strong>${Math.round((c.classification?.confidence || 0) * 100)}%</strong>style confidence</div></div>
-          <a class="btn" style="display:inline-flex;margin-top:12px" href="/clans?selected=${encodeURIComponent(c.womGroupId || c.clan_id)}">View clan</a>
+          <div>${pill(c.clan_type || 'Plugin Clan', 'gold')}${c.verified ? pill('verified','green') : ''}${c.homeworld ? pill(`W${c.homeworld}`) : ''}</div>
+          <p>${c.description || 'Registered through Clan War Board plugin activity.'}</p>
+          <div class="row"><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div><div class="metric"><strong>${fmt.format(c.stats?.battles || 0)}</strong>battles</div><div class="metric"><strong>${fmt.format(c.stats?.kills || 0)}</strong>kills</div><div class="metric"><strong>${fmt.format(c.stats?.returns || 0)}</strong>returns</div></div>
+          <a class="btn" style="display:inline-flex;margin-top:12px" href="/clans?selected=${encodeURIComponent(c.clan_id)}">View fight history</a>
         </article>`;
       }
       function emptyCard(title, text) { return `<div class="empty panel"><h3>${title}</h3><p>${text}</p></div>`; }
       function renderClans(clans) {
         latestClans = clans || [];
-        $('clan-grid').innerHTML = latestClans.length ? latestClans.slice(0, 24).map(clanCard).join('') : emptyCard('No clans found', 'Try a different clan name or style.');
+        $('clan-grid').innerHTML = latestClans.length ? latestClans.slice(0, 24).map(clanCard).join('') : emptyCard('No plugin clans yet', 'Clans will appear here only after they use Clan War Board through RuneLite.');
         $('stat-clans').textContent = fmt.format(latestClans.length);
         $('stat-members').textContent = fmt.format(latestClans.reduce((n,c)=>n+(c.member_count||0),0));
       }
@@ -203,7 +203,7 @@
         $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${b.winnerClanName || b.fightId}</h3></div>`).join('') : emptyCard('No published results yet', 'Completed battle records will appear here after both sides have fought and the result is ready to publish.');
         $('home-setup-grid').innerHTML = schema.requiredFields.map(f => `<div class="stat"><b>${f.label}</b><span>${f.privacy}</span></div>`).join('');
         $('challenge-grid').innerHTML = challenge.leaderActions.map(a => `<div class="card panel"><h3>${a.name}</h3><p>${a.description}</p></div>`).join('');
-        $('leaderboard-grid').innerHTML = leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(c.clan_type || 'OSRS Clan', 'gold')}${pill(c.ratingStatus.replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('');
+        $('leaderboard-grid').innerHTML = leaderboard.standings.length ? leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(c.clan_type || 'Plugin Clan', 'gold')}${pill(c.ratingStatus.replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('') : emptyCard('No ranked clans yet', 'Leaderboard entries unlock after plugin clans complete verified fights.');
         $('judging-grid').innerHTML = judging.winnerSignals.map(s => `<div class="card panel"><h3>${s.name}</h3><div>${pill(`${s.weight} weight`, s.weight < 0 ? 'red' : 'green')}</div><p>${s.description}</p></div>`).join('');
       }
       document.querySelectorAll('a[href^="/"]').forEach(a => {

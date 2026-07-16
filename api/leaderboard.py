@@ -4,11 +4,9 @@ import json
 import time
 import urllib.parse
 import urllib.request
-from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-WOM_BASE_URL = "https://api.wiseoldman.net/v2"
 WIKI_API_URL = "https://oldschool.runescape.wiki/api.php"
 USER_AGENT = "ClanWarBoard/0.2 (+https://github.com/ItMeansBigMountain/clan-war-board-service)"
 CACHE_SECONDS = 300
@@ -46,11 +44,6 @@ def cached_json(url: str, ttl: int = CACHE_SECONDS) -> Any:
         payload = json.load(response)
     _CACHE[url] = (now, payload)
     return payload
-
-
-def wom_url(path: str, **params: Any) -> str:
-    query = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
-    return f"{WOM_BASE_URL}{path}" + (f"?{query}" if query else "")
 
 
 def wiki_image_url(page: str, size: int = 1000) -> str | None:
@@ -100,147 +93,90 @@ def get_theme_assets() -> dict[str, Any]:
     }
 
 
-def fetch_wom_groups(limit: int = 25) -> list[dict[str, Any]]:
-    limit = max(1, min(limit, 100))
-    return cached_json(wom_url("/groups", limit=limit), ttl=CACHE_SECONDS)
+PLUGIN_CLANS: list[dict[str, Any]] = []
 
-
-def fetch_wom_group(group_id: int) -> dict[str, Any]:
-    return cached_json(wom_url(f"/groups/{group_id}"), ttl=CACHE_SECONDS)
-
-
-def infer_group_classification(group: dict[str, Any], memberships: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    text = " ".join(
-        str(group.get(key) or "") for key in ["name", "clanChat", "description"]
-    ).lower()
-    if memberships:
-        builds = Counter((m.get("player") or {}).get("build") or "unknown" for m in memberships)
-        total = sum(builds.values()) or 1
-        top_build, top_count = builds.most_common(1)[0]
-        build_ratio = top_count / total
-        if top_build == "pure" and build_ratio >= 0.35:
-            return {"label": "Pure Clan", "source": "Wise Old Man member builds", "confidence": round(build_ratio, 2), "buildBreakdown": dict(builds)}
-        if top_build in {"zerker", "berserker"} and build_ratio >= 0.25:
-            return {"label": "Zerker Clan", "source": "Wise Old Man member builds", "confidence": round(build_ratio, 2), "buildBreakdown": dict(builds)}
-        if top_build == "main" and build_ratio >= 0.45:
-            return {"label": "Main Clan", "source": "Wise Old Man member builds", "confidence": round(build_ratio, 2), "buildBreakdown": dict(builds)}
-    keyword_map = [
-        ("pure", "Pure Clan"),
-        ("zerk", "Zerker Clan"),
-        ("pvp", "PvP Clan"),
-        ("pk", "PvP Clan"),
-        ("wild", "Wilderness Clan"),
-        ("iron", "Ironman Clan"),
-        ("pvm", "PvM Clan"),
-        ("social", "Social Clan"),
-    ]
-    for token, label in keyword_map:
-        if token in text:
-            return {"label": label, "source": "Wise Old Man group text", "confidence": 0.55, "buildBreakdown": {}}
-    return {"label": "OSRS Clan", "source": "Wise Old Man group listing", "confidence": 0.35, "buildBreakdown": {}}
-
-
-def public_group(group: dict[str, Any], rank: int | None = None, include_members: bool = False) -> dict[str, Any]:
-    memberships = group.get("memberships") if include_members else None
-    classification = infer_group_classification(group, memberships)
-    members = []
-    role_counts: dict[str, int] = {}
-    if include_members and memberships:
-        for membership in memberships:
-            role = membership.get("role") or "member"
-            role_counts[role] = role_counts.get(role, 0) + 1
-        for membership in memberships[:100]:
-            player = membership.get("player") or {}
-            members.append(
-                {
-                    "displayName": player.get("displayName") or player.get("username"),
-                    "role": membership.get("role"),
-                    "type": player.get("type"),
-                    "build": player.get("build"),
-                    "status": player.get("status"),
-                    "country": player.get("country"),
-                    "ehp": player.get("ehp"),
-                    "ehb": player.get("ehb"),
-                    "updatedAt": player.get("updatedAt"),
-                }
-            )
+def plugin_clan_profile(row: dict[str, Any], rank: int | None = None) -> dict[str, Any]:
+    member_count = int(row.get("member_count") or row.get("memberCount") or 0)
+    wins = int(row.get("wins") or 0)
+    losses = int(row.get("losses") or 0)
+    draws = int(row.get("draws") or 0)
+    battles = int(row.get("battles") or wins + losses + draws)
     payload = {
-        "clan_id": str(group.get("id")),
-        "womGroupId": group.get("id"),
-        "clan_name": group.get("name"),
-        "clanChat": group.get("clanChat"),
-        "description": group.get("description"),
-        "homeworld": group.get("homeworld"),
-        "verified": group.get("verified"),
-        "patron": group.get("patron"),
-        "visible": group.get("visible"),
-        "profileImage": group.get("profileImage"),
-        "bannerImage": group.get("bannerImage"),
-        "womScore": group.get("score"),
-        "member_count": group.get("memberCount") or len(members),
-        "updatedAt": group.get("updatedAt"),
-        "clan_type": classification["label"],
-        "classification": classification,
-        "dataSource": "Wise Old Man Groups API",
+        "clan_id": str(row.get("clan_id") or normalize_clan_id(str(row.get("clan_name") or row.get("clanName") or "unknown"))),
+        "clan_name": row.get("clan_name") or row.get("clanName") or "Unknown clan",
+        "clanChat": row.get("clanChat") or row.get("clan_name") or row.get("clanName"),
+        "description": row.get("description") or "Registered through Clan War Board plugin activity.",
+        "homeworld": row.get("homeworld"),
+        "verified": bool(row.get("verified", False)),
+        "profileImage": row.get("profileImage"),
+        "bannerImage": row.get("bannerImage"),
+        "member_count": member_count,
+        "updatedAt": row.get("updatedAt") or utc_now_iso(),
+        "clan_type": row.get("clan_type") or row.get("clanType") or "Plugin Clan",
+        "classification": {
+            "label": row.get("clan_type") or row.get("clanType") or "Plugin Clan",
+            "source": "Clan War Board plugin registration",
+            "confidence": 1.0 if row.get("clan_type") or row.get("clanType") else 0.5,
+            "buildBreakdown": row.get("buildBreakdown") or {},
+        },
+        "dataSource": "Clan War Board plugin",
+        "stats": {
+            "battles": battles,
+            "wins": wins,
+            "losses": losses,
+            "draws": draws,
+            "kills": int(row.get("kills") or 0),
+            "deaths": int(row.get("deaths") or 0),
+            "returns": int(row.get("returns") or 0),
+            "damageDealt": int(row.get("damageDealt") or 0),
+            "damageTaken": int(row.get("damageTaken") or 0),
+        },
     }
     if rank is not None:
         payload["rank"] = rank
-    if include_members:
-        payload["members"] = members
-        payload["roleCounts"] = role_counts
-        payload["wiseOldMan"] = wom_import_plan(group.get("id"))
     return payload
 
-
 def get_clans(limit: int = 25) -> dict[str, Any]:
-    try:
-        groups = fetch_wom_groups(limit=limit)
-        clans = [public_group(group, rank=index + 1) for index, group in enumerate(groups)]
-        return {"generatedAt": utc_now_iso(), "source": "Wise Old Man Groups API", "clans": clans}
-    except Exception as exc:
-        return {"generatedAt": utc_now_iso(), "source": "Wise Old Man Groups API", "error": "wom_unavailable", "detail": str(exc), "clans": []}
-
+    clans = [plugin_clan_profile(row, index + 1) for index, row in enumerate(PLUGIN_CLANS[:limit])]
+    return {
+        "generatedAt": utc_now_iso(),
+        "source": "Clan War Board plugin",
+        "registrationPolicy": "Only clans seen through the RuneLite plugin or leader registration appear here.",
+        "clans": clans,
+        "emptyState": "No clans have registered through the Clan War Board plugin yet.",
+    }
 
 def get_leaderboard() -> dict[str, Any]:
     payload = get_clans(limit=25)
-    payload["privacy"] = "real Wise Old Man group listing; no Clan War Board scheduled-fight intel"
+    payload["privacy"] = "plugin-registered clans only; no external clan-directory promotion"
     payload["standings"] = payload.pop("clans")
     return payload
-
 
 def search_clans(query: str) -> dict[str, Any]:
     payload = get_clans(limit=100)
     q = query.strip().lower()
     results = []
     for clan in payload.get("clans", []):
-        haystack = " ".join(
-            str(clan.get(key) or "") for key in ["clan_id", "clan_name", "clanChat", "description", "clan_type"]
-        ).lower()
+        haystack = " ".join(str(clan.get(key) or "") for key in ["clan_id", "clan_name", "clanChat", "description", "clan_type"]).lower()
         if not q or q in haystack:
             results.append(clan)
-    return {"generatedAt": utc_now_iso(), "source": payload.get("source"), "query": query, "results": results}
-
+    return {"generatedAt": utc_now_iso(), "source": payload.get("source"), "query": query, "results": results, "emptyState": payload.get("emptyState")}
 
 def get_clan(clan_id: str) -> dict[str, Any] | None:
     normalized = normalize_clan_id(clan_id)
-    group_id = int(clan_id) if clan_id.isdigit() else None
-    if group_id is None:
-        for group in fetch_wom_groups(limit=100):
-            if normalize_clan_id(str(group.get("name") or "")) == normalized or normalize_clan_id(str(group.get("clanChat") or "")) == normalized:
-                group_id = int(group["id"])
-                break
-    if group_id is None:
-        return None
-    group = fetch_wom_group(group_id)
-    profile = public_group(group, include_members=True)
-    profile["upcomingBattles"] = []
-    profile["pastBattles"] = []
-    profile["clanWarBoardData"] = {
-        "status": "no_plugin_scheduled_fights_yet",
-        "message": "Real fight posts will appear after RuneLite leader write endpoints are enabled and clans submit matches.",
-    }
-    return profile
-
+    for row in PLUGIN_CLANS:
+        profile = plugin_clan_profile(row)
+        if normalize_clan_id(profile["clan_id"]) == normalized or normalize_clan_id(profile["clan_name"]) == normalized or normalize_clan_id(str(profile.get("clanChat") or "")) == normalized:
+            profile["members"] = row.get("members") or []
+            profile["roleCounts"] = row.get("roleCounts") or {}
+            profile["upcomingBattles"] = row.get("upcomingBattles") or []
+            profile["pastBattles"] = row.get("pastBattles") or []
+            profile["clanWarBoardData"] = {
+                "status": "plugin_registered",
+                "message": "In-depth clan pages are based on Clan War Board fight history, member telemetry, and published stats.",
+            }
+            return profile
+    return None
 
 def get_public_availability() -> dict[str, Any]:
     return {
@@ -337,11 +273,10 @@ def get_competitive_leaderboard() -> dict[str, Any]:
             "rating": None,
             "record": {"wins": 0, "losses": 0, "draws": 0, "disputed": 0},
             "ratingStatus": "unrated_until_completed_clan_war_board_fights",
-            "sourceStanding": clan.get("womScore"),
         })
     return {
         "generatedAt": utc_now_iso(),
-        "source": "Wise Old Man groups plus future Clan War Board completed fight results",
+        "source": "Clan War Board plugin completed fight results",
         "leaderboardPolicy": get_win_judging_system()["publicLeaderboardPolicy"],
         "standings": standings,
     }
@@ -393,17 +328,5 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": "clan-war-board-service",
         "generatedAt": utc_now_iso(),
-        "storage": "wom-live-staticwebapp-managed-api",
-    }
-
-
-def wom_import_plan(group_id: int | None) -> dict[str, Any]:
-    if group_id is None:
-        return {"status": "not_linked"}
-    return {
-        "womGroupId": group_id,
-        "status": "linked_live",
-        "source": "Wise Old Man Groups API",
-        "allowedData": ["group name", "member list", "public WOM ranks/scores", "player build/type/status"],
-        "excludedData": ["upcoming war world", "upcoming war hotspot", "private leader notes"],
+        "storage": "plugin-registered-staticwebapp-managed-api",
     }
