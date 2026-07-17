@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -95,6 +98,116 @@ def get_theme_assets() -> dict[str, Any]:
 
 PLUGIN_CLANS: list[dict[str, Any]] = []
 
+
+def storage_backend() -> str:
+    return os.environ.get("STORAGE_BACKEND", "memory").strip().lower()
+
+
+def cosmos_clans_container():
+    if storage_backend() != "cosmos":
+        return None
+    endpoint = os.environ.get("COSMOS_ENDPOINT", "").strip()
+    key = os.environ.get("COSMOS_KEY", "").strip()
+    database = os.environ.get("COSMOS_DATABASE", "clan-war-board").strip()
+    container = os.environ.get("COSMOS_CLANS_CONTAINER", "clans").strip()
+    if not endpoint or not key:
+        raise RuntimeError("Cosmos storage is selected but COSMOS_ENDPOINT/COSMOS_KEY are missing")
+    from azure.cosmos import CosmosClient
+    return CosmosClient(endpoint, credential=key).get_database_client(database).get_container_client(container)
+
+
+def list_plugin_clans(limit: int = 100) -> list[dict[str, Any]]:
+    container = cosmos_clans_container()
+    if container is None:
+        return list(PLUGIN_CLANS[:limit])
+    query = "SELECT TOP @limit * FROM c WHERE c.docType = 'clan' ORDER BY c.updatedAt DESC"
+    return list(container.query_items(query=query, parameters=[{"name": "@limit", "value": limit}], enable_cross_partition_query=True))
+
+
+def load_plugin_clan(clan_id: str) -> dict[str, Any] | None:
+    container = cosmos_clans_container()
+    if container is None:
+        return next((item for item in PLUGIN_CLANS if item.get("clan_id") == clan_id), None)
+    try:
+        return container.read_item(item=clan_id, partition_key=clan_id)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 404:
+            return None
+        raise
+
+
+def save_plugin_clan(row: dict[str, Any]) -> None:
+    container = cosmos_clans_container()
+    if container is None:
+        current = next((item for item in PLUGIN_CLANS if item.get("clan_id") == row.get("clan_id")), None)
+        if current is None:
+            PLUGIN_CLANS.append(row)
+        elif current is not row:
+            current.clear()
+            current.update(row)
+        return
+    document = dict(row)
+    document["id"] = row["clan_id"]
+    document["normalizedName"] = row["clan_id"]
+    document["docType"] = "clan"
+    container.upsert_item(document)
+
+
+def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    install_id = str(payload.get("installId") or "").strip()
+    clan_name = " ".join(str(payload.get("clanName") or "").strip().split())[:80]
+    player_name = " ".join(str(payload.get("playerName") or "").strip().split())[:12]
+    try:
+        parsed_install_id = uuid.UUID(install_id)
+        if parsed_install_id.version != 4:
+            raise ValueError("install id must be UUIDv4")
+    except (ValueError, AttributeError):
+        return {"ok": False, "error": "invalid_install_id"}
+    if not clan_name:
+        return {"ok": False, "error": "clan_name_required"}
+
+    clan_id = normalize_clan_id(clan_name)
+    install_hash = hashlib.sha256(install_id.encode("utf-8")).hexdigest()
+    now = utc_now_iso()
+    row = load_plugin_clan(clan_id)
+    if row is None:
+        row = {
+            "clan_id": clan_id,
+            "clan_name": clan_name,
+            "clan_type": "Unclassified",
+            "registeredAt": now,
+            "members": [],
+        }
+
+    members = row.setdefault("members", [])
+    member = next((item for item in members if item.get("installHash") == install_hash), None)
+    public_stats = bool(payload.get("publicStats", False))
+    member_payload = {
+        "installHash": install_hash,
+        "displayName": player_name if public_stats and player_name else "Private member",
+        "public": public_stats,
+        "clanRank": int(payload.get("clanRank") or -1),
+        "pluginVersion": str(payload.get("pluginVersion") or "unknown")[:32],
+        "lastSeenAt": now,
+    }
+    if member is None:
+        members.append(member_payload)
+    else:
+        member.clear()
+        member.update(member_payload)
+    row["member_count"] = len(members)
+    row["updatedAt"] = now
+    save_plugin_clan(row)
+    return {
+        "ok": True,
+        "clanId": clan_id,
+        "registeredMembers": row["member_count"],
+        "publicStats": public_stats,
+        "serverTime": now,
+    }
+
+
 def plugin_clan_profile(row: dict[str, Any], rank: int | None = None) -> dict[str, Any]:
     member_count = int(row.get("member_count") or row.get("memberCount") or 0)
     wins = int(row.get("wins") or 0)
@@ -137,7 +250,7 @@ def plugin_clan_profile(row: dict[str, Any], rank: int | None = None) -> dict[st
     return payload
 
 def get_clans(limit: int = 25) -> dict[str, Any]:
-    clans = [plugin_clan_profile(row, index + 1) for index, row in enumerate(PLUGIN_CLANS[:limit])]
+    clans = [plugin_clan_profile(row, index + 1) for index, row in enumerate(list_plugin_clans(limit))]
     return {
         "generatedAt": utc_now_iso(),
         "source": "Clan War Board plugin",
@@ -164,10 +277,21 @@ def search_clans(query: str) -> dict[str, Any]:
 
 def get_clan(clan_id: str) -> dict[str, Any] | None:
     normalized = normalize_clan_id(clan_id)
-    for row in PLUGIN_CLANS:
+    candidates = list_plugin_clans(100)
+    direct = load_plugin_clan(normalized)
+    if direct is not None and all(row.get("clan_id") != direct.get("clan_id") for row in candidates):
+        candidates.append(direct)
+    for row in candidates:
         profile = plugin_clan_profile(row)
         if normalize_clan_id(profile["clan_id"]) == normalized or normalize_clan_id(profile["clan_name"]) == normalized or normalize_clan_id(str(profile.get("clanChat") or "")) == normalized:
-            profile["members"] = row.get("members") or []
+            profile["members"] = [
+                {
+                    "displayName": member.get("displayName") if member.get("public") else "Private member",
+                    "public": bool(member.get("public", False)),
+                    "lastSeenAt": member.get("lastSeenAt"),
+                }
+                for member in (row.get("members") or [])
+            ]
             profile["roleCounts"] = row.get("roleCounts") or {}
             profile["upcomingBattles"] = row.get("upcomingBattles") or []
             profile["pastBattles"] = row.get("pastBattles") or []
@@ -328,5 +452,6 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": "clan-war-board-service",
         "generatedAt": utc_now_iso(),
-        "storage": "plugin-registered-staticwebapp-managed-api",
+        "storage": "cosmos" if storage_backend() == "cosmos" else "memory-local-only",
+        "productionReadyStorage": storage_backend() == "cosmos",
     }

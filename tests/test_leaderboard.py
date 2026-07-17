@@ -20,6 +20,7 @@ from leaderboard import (
     get_win_judging_system,
     health,
     plugin_clan_profile,
+    register_plugin,
     search_clans,
     submit_telemetry_batch,
 )
@@ -56,7 +57,34 @@ class LeaderboardTests(unittest.TestCase):
         payload = health()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["service"], "clan-war-board-service")
-        self.assertIn("plugin-registered", payload["storage"])
+        self.assertEqual(payload["storage"], "memory-local-only")
+        self.assertFalse(payload["productionReadyStorage"])
+
+    def test_plugin_registration_creates_real_clan_and_respects_private_player_default(self):
+        result = register_plugin({
+            "installId": "11111111-1111-4111-8111-111111111111",
+            "playerName": "Oyama",
+            "clanName": "TRAPISTAN",
+            "clanRank": 126,
+            "pluginVersion": "1.0.0",
+            "publicStats": False,
+        })
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["clanId"], "trapistan")
+        clan = get_clan("trapistan")
+        self.assertNotIn("Oyama", str(clan.get("members")))
+        self.assertNotIn("installHash", str(clan))
+        self.assertEqual(get_clans()["clans"][0]["member_count"], 1)
+
+    def test_plugin_registration_rejects_invalid_install_or_missing_clan(self):
+        self.assertFalse(register_plugin({"installId": "bad", "clanName": "TRAPISTAN"})["ok"])
+        self.assertFalse(register_plugin({"installId": "11111111-1111-4111-8111-111111111111", "clanName": ""})["ok"])
+
+    def test_plugin_registration_is_idempotent_per_installation(self):
+        payload = {"installId": "11111111-1111-4111-8111-111111111111", "playerName": "Oyama", "clanName": "TRAPISTAN", "clanRank": 126, "pluginVersion": "1.0.0", "publicStats": True}
+        register_plugin(payload)
+        register_plugin(payload)
+        self.assertEqual(get_clans()["clans"][0]["member_count"], 1)
 
     def test_clans_are_empty_until_plugin_registration(self):
         payload = get_clans()

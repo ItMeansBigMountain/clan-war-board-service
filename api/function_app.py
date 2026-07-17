@@ -18,6 +18,7 @@ from leaderboard import (
     get_theme_assets,
     get_win_judging_system,
     health,
+    register_plugin,
     search_clans,
     submit_telemetry_batch,
 )
@@ -81,6 +82,15 @@ if func is not None:
     def theme_assets_route(req):
         return json_response(get_theme_assets())
 
+    @app.route(route="plugin/register", methods=["POST"])
+    def plugin_register_route(req):
+        try:
+            payload = req.get_json()
+        except Exception:
+            payload = None
+        result = register_plugin(payload)
+        return json_response(result, status_code=200 if result.get("ok") else 400, cache_control="no-store")
+
     @app.route(route="plugin/events/batch", methods=["POST"])
     def telemetry_batch_route(req):
         try:
@@ -88,10 +98,10 @@ if func is not None:
         except Exception:
             payload = None
         result = submit_telemetry_batch(payload, dict(req.headers or {}))
-        return json_response(result, status_code=202 if result.get("ok") else 400)
+        return json_response(result, status_code=202 if result.get("ok") else 400, cache_control="no-store")
 
 
-def json_response(payload: dict, status_code: int = 200):
+def json_response(payload: dict, status_code: int = 200, cache_control: str = "public, max-age=60"):
     if func is None:
         return json.dumps(payload, sort_keys=True)
     return func.HttpResponse(
@@ -99,7 +109,7 @@ def json_response(payload: dict, status_code: int = 200):
         status_code=status_code,
         mimetype="application/json",
         headers={
-            "Cache-Control": "public, max-age=60",
+            "Cache-Control": cache_control,
             "X-Content-Type-Options": "nosniff",
         },
     )
