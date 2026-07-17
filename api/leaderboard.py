@@ -99,6 +99,64 @@ def get_theme_assets() -> dict[str, Any]:
 PLUGIN_CLANS: list[dict[str, Any]] = []
 
 
+def normalize_fight_terms(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        location = str(payload.get("location") or "").strip()
+        world = int(payload.get("world"))
+        starts_at = str(payload.get("startsAt") or "").strip()
+        combat_min = int(payload.get("combatMin"))
+        combat_max = int(payload.get("combatMax"))
+        duration = int(payload.get("durationMinutes"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid fight terms") from exc
+    if not location or len(location) > 80 or not 301 <= world <= 599:
+        raise ValueError("invalid location or OSRS world")
+    try:
+        parsed = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("startsAt must be ISO-8601") from exc
+    if parsed.tzinfo is None or combat_min < 3 or combat_max > 126 or combat_min > combat_max or not 5 <= duration <= 180:
+        raise ValueError("invalid time, combat range, or duration")
+    rules = str(payload.get("rules") or "").strip()
+    if len(rules) > 1000:
+        raise ValueError("rules are too long")
+    return {
+        "location": location,
+        "world": world,
+        "startsAt": parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "combatMin": combat_min,
+        "combatMax": combat_max,
+        "durationMinutes": duration,
+        "rules": rules,
+    }
+
+
+def terms_hash(terms: dict[str, Any]) -> str:
+    canonical = json.dumps(terms, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def apply_challenge_action(challenge: dict[str, Any], action: str, clan_id: str, new_terms: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = json.loads(json.dumps(challenge))
+    actor = normalize_clan_id(clan_id)
+    if not actor:
+        raise ValueError("clan identity is required")
+    if action == "accept":
+        accepted = list(dict.fromkeys([*result.get("acceptedBy", []), actor]))
+        result["acceptedBy"] = accepted
+        result["status"] = "confirmed" if len(accepted) >= 2 else "proposed"
+    elif action == "counter":
+        normalized = normalize_fight_terms(new_terms or {})
+        result.update({"terms": normalized, "termsHash": terms_hash(normalized), "acceptedBy": [actor], "status": "reconfirm_required"})
+    elif action in {"reject", "cancel"}:
+        result["status"] = "rejected" if action == "reject" else "cancelled"
+        result["acceptedBy"] = []
+    else:
+        raise ValueError("unsupported challenge action")
+    result["updatedAt"] = utc_now_iso()
+    return result
+
+
 def storage_backend() -> str:
     return os.environ.get("STORAGE_BACKEND", "memory").strip().lower()
 

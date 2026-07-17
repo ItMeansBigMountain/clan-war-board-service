@@ -21,6 +21,9 @@ from leaderboard import (
     health,
     plugin_clan_profile,
     register_plugin,
+    normalize_fight_terms,
+    terms_hash,
+    apply_challenge_action,
     search_clans,
     submit_telemetry_batch,
 )
@@ -148,6 +151,38 @@ class LeaderboardTests(unittest.TestCase):
         names = {row["name"] for row in system["winnerSignals"]}
         self.assertTrue({"kills", "deaths", "returns", "durationControl", "damagePressure"}.issubset(names))
         self.assertIn("leader", " ".join(system["requiredBeforeFight"]))
+
+    def test_match_terms_hash_and_two_party_acceptance(self):
+        terms = normalize_fight_terms({
+            "location": "Chaos Temple",
+            "world": 303,
+            "startsAt": "2026-07-20T20:00:00Z",
+            "combatMin": 70,
+            "combatMax": 126,
+            "durationMinutes": 30,
+            "rules": "No overheads",
+        })
+        first_hash = terms_hash(terms)
+        self.assertEqual(first_hash, terms_hash(dict(reversed(list(terms.items())))))
+        challenge = {"status": "proposed", "terms": terms, "termsHash": first_hash, "acceptedBy": []}
+        challenge = apply_challenge_action(challenge, "accept", "alpha")
+        self.assertEqual(challenge["status"], "proposed")
+        challenge = apply_challenge_action(challenge, "accept", "bravo")
+        self.assertEqual(challenge["status"], "confirmed")
+
+    def test_terms_change_requires_both_clans_to_reconfirm(self):
+        terms = normalize_fight_terms({"location": "Chaos Temple", "world": 303, "startsAt": "2026-07-20T20:00:00Z", "combatMin": 70, "combatMax": 126, "durationMinutes": 30, "rules": ""})
+        challenge = {"status": "confirmed", "terms": terms, "termsHash": terms_hash(terms), "acceptedBy": ["alpha", "bravo"]}
+        changed = dict(terms)
+        changed["world"] = 304
+        challenge = apply_challenge_action(challenge, "counter", "alpha", changed)
+        self.assertEqual(challenge["status"], "reconfirm_required")
+        self.assertEqual(challenge["acceptedBy"], ["alpha"])
+        self.assertNotEqual(challenge["termsHash"], terms_hash(terms))
+
+    def test_match_terms_reject_invalid_world_range_and_duration(self):
+        with self.assertRaises(ValueError):
+            normalize_fight_terms({"location": "x", "world": 1, "startsAt": "bad", "combatMin": 100, "combatMax": 70, "durationMinutes": 0})
 
     def test_challenge_system_has_direct_challenge(self):
         system = get_challenge_system()
