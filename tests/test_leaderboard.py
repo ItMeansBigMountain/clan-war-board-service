@@ -1,4 +1,5 @@
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +25,12 @@ from leaderboard import (
     normalize_fight_terms,
     terms_hash,
     apply_challenge_action,
+    authorize_write,
+    create_availability,
+    create_challenge,
+    get_challenges,
+    update_challenge,
+    rotate_installation_session,
     search_clans,
     submit_telemetry_batch,
 )
@@ -55,6 +62,9 @@ def fake_cached_json(url, ttl=300):
 class LeaderboardTests(unittest.TestCase):
     def setUp(self):
         leaderboard.PLUGIN_CLANS.clear()
+        leaderboard.INSTALL_SESSIONS.clear()
+        leaderboard.AVAILABILITY.clear()
+        leaderboard.CHALLENGES.clear()
 
     def test_health(self):
         payload = health()
@@ -88,6 +98,82 @@ class LeaderboardTests(unittest.TestCase):
         register_plugin(payload)
         register_plugin(payload)
         self.assertEqual(get_clans()["clans"][0]["member_count"], 1)
+
+    def test_registration_issues_hashed_scoped_installation_session(self):
+        result = register_plugin({"installId": "11111111-1111-4111-8111-111111111111", "playerName": "Oyama", "clanName": "TRAPISTAN", "clanRank": 100, "pluginVersion": "1.0.0"})
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(len(result["sessionToken"]), 40)
+        self.assertIn("leader:write", result["capabilities"])
+        self.assertNotIn(result["sessionToken"], str(leaderboard.INSTALL_SESSIONS))
+
+    def test_member_session_cannot_use_leader_write_capability(self):
+        result = register_plugin({"installId": "22222222-2222-4222-8222-222222222222", "playerName": "Member", "clanName": "TRAPISTAN", "clanRank": 1})
+        denied = create_availability({"startsAt": "2026-07-20T20:00:00Z", "durationMinutes": 30}, self.auth_headers(result["sessionToken"]))
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["error"], "capability_denied")
+
+    def test_authenticated_write_rejects_replayed_nonce(self):
+        result = register_plugin({"installId": "33333333-3333-4333-8333-333333333333", "playerName": "Leader", "clanName": "TRAPISTAN", "clanRank": 100})
+        headers = self.auth_headers(result["sessionToken"], "44444444-4444-4444-8444-444444444444")
+        self.assertTrue(authorize_write(headers, "leader:write")["ok"])
+        replay = authorize_write(headers, "leader:write")
+        self.assertFalse(replay["ok"])
+        self.assertEqual(replay["error"], "replayed_request")
+
+    def test_rotation_revokes_old_session_and_returns_new_token(self):
+        result = register_plugin({"installId": "55555555-5555-4555-8555-555555555555", "playerName": "Leader", "clanName": "TRAPISTAN", "clanRank": 100})
+        rotated = rotate_installation_session(self.auth_headers(result["sessionToken"]))
+        self.assertTrue(rotated["ok"])
+        self.assertNotEqual(rotated["sessionToken"], result["sessionToken"])
+        self.assertEqual(authorize_write(self.auth_headers(result["sessionToken"]), "leader:write")["error"], "invalid_session")
+
+    def test_leader_can_create_availability_and_challenge_with_canonical_terms(self):
+        result = register_plugin({"installId": "66666666-6666-4666-8666-666666666666", "playerName": "Leader", "clanName": "TRAPISTAN", "clanRank": 100})
+        availability = create_availability({"startsAt": "2026-07-20T20:00:00Z", "durationMinutes": 30, "combatMin": 70, "combatMax": 126, "notes": "GMT"}, self.auth_headers(result["sessionToken"]))
+        self.assertTrue(availability["ok"])
+        public = get_public_availability()["availability"]
+        self.assertEqual(len(public), 1)
+        self.assertEqual(public[0]["creatorClanId"], "trapistan")
+        self.assertNotIn("session", str(public).lower())
+        challenge = create_challenge({"opponentClanId": "Rivals", "terms": {"location": "Chaos Temple", "world": 303, "startsAt": "2026-07-20T20:00:00Z", "combatMin": 70, "combatMax": 126, "durationMinutes": 30, "rules": "No overheads"}}, self.auth_headers(result["sessionToken"]))
+        self.assertTrue(challenge["ok"])
+        self.assertEqual(challenge["challenge"]["creatorClanId"], "trapistan")
+        self.assertEqual(challenge["challenge"]["acceptedBy"], ["trapistan"])
+        self.assertEqual(len(challenge["challenge"]["termsHash"]), 64)
+
+    def test_only_challenge_participants_can_accept_terms(self):
+        creator = register_plugin({"installId": "77777777-7777-4777-8777-777777777777", "playerName": "Alpha", "clanName": "Alpha", "clanRank": 100})
+        created = create_challenge({"opponentClanId": "Bravo", "terms": {"location": "Chaos Temple", "world": 303, "startsAt": "2026-07-20T20:00:00Z", "combatMin": 70, "combatMax": 126, "durationMinutes": 30, "rules": ""}}, self.auth_headers(creator["sessionToken"]))
+        outsider = register_plugin({"installId": "88888888-8888-4888-8888-888888888888", "playerName": "Other", "clanName": "Outsider", "clanRank": 100})
+        denied = update_challenge(created["challenge"]["id"], {"action": "accept"}, self.auth_headers(outsider["sessionToken"]))
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["error"], "challenge_forbidden")
+        bravo = register_plugin({"installId": "99999999-9999-4999-8999-999999999999", "playerName": "Bravo", "clanName": "Bravo", "clanRank": 100})
+        accepted = update_challenge(created["challenge"]["id"], {"action": "accept"}, self.auth_headers(bravo["sessionToken"]))
+        self.assertTrue(accepted["ok"])
+        self.assertEqual(accepted["challenge"]["status"], "confirmed")
+        inbox = get_challenges(self.auth_headers(bravo["sessionToken"]))
+        self.assertTrue(inbox["ok"])
+        self.assertEqual([created["challenge"]["id"]], [item["id"] for item in inbox["challenges"]])
+        public = get_public_availability()
+        self.assertEqual(len(public["scheduled"]), 1)
+        self.assertNotIn("world", str(public["scheduled"]).lower())
+        self.assertNotIn("location", str(public["scheduled"]).lower())
+
+    def test_write_proofs_enforce_clock_skew_and_rate_limit(self):
+        result = register_plugin({"installId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "playerName": "Leader", "clanName": "Alpha", "clanRank": 100})
+        now = int(time.time())
+        stale = self.auth_headers(result["sessionToken"])
+        stale["X-CWB-Timestamp"] = str(now - leaderboard.WRITE_CLOCK_SKEW_SECONDS - 1)
+        self.assertEqual(authorize_write(stale, "leader:write", now)["error"], "stale_request")
+        for _ in range(leaderboard.WRITE_RATE_LIMIT):
+            self.assertTrue(authorize_write(self.auth_headers(result["sessionToken"]), "leader:write", now)["ok"])
+        limited = authorize_write(self.auth_headers(result["sessionToken"]), "leader:write", now)
+        self.assertEqual(limited["error"], "rate_limited")
+
+    @staticmethod
+    def auth_headers(token, nonce=None):
+        return {"Authorization": "Bearer " + token, "X-CWB-Timestamp": str(int(time.time())), "X-CWB-Nonce": nonce or str(__import__("uuid").uuid4())}
 
     def test_clans_are_empty_until_plugin_registration(self):
         payload = get_clans()
@@ -198,10 +284,13 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(payload["standings"][0]["record"]["wins"], 0)
 
     def test_telemetry_batch_privacy_and_public_world_policy(self):
-        payload = submit_telemetry_batch({"events": [
+        registered = register_plugin({"installId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "playerName": "Oyama", "clanName": "TRAPISTAN", "clanRank": 1})
+        events = {"events": [
             {"type": "damage_dealt", "playerName": "Oyama", "clanName": "TRAPISTAN", "opponentName": "Enemy", "amount": 31, "world": 330, "tick": 10, "timestamp": 123, "playerPublic": False},
             {"type": "heartbeat", "playerName": "PublicGuy", "clanName": "TRAPISTAN", "world": 330, "tick": 11, "timestamp": 124, "playerPublic": True},
-        ]})
+        ]}
+        self.assertEqual(submit_telemetry_batch(events, {})["error"], "missing_session")
+        payload = submit_telemetry_batch(events, self.auth_headers(registered["sessionToken"]))
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["accepted"], 2)
         self.assertTrue(payload["policy"]["worldIsPublic"])

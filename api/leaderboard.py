@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import time
 import urllib.parse
 import urllib.request
@@ -97,6 +98,13 @@ def get_theme_assets() -> dict[str, Any]:
 
 
 PLUGIN_CLANS: list[dict[str, Any]] = []
+INSTALL_SESSIONS: dict[str, dict[str, Any]] = {}
+AVAILABILITY: list[dict[str, Any]] = []
+CHALLENGES: list[dict[str, Any]] = []
+SESSION_SECONDS = 3600
+WRITE_CLOCK_SKEW_SECONDS = 300
+WRITE_RATE_LIMIT = 30
+LEADER_RANK_MINIMUM = 100
 
 
 def normalize_fight_terms(payload: dict[str, Any]) -> dict[str, Any]:
@@ -174,6 +182,19 @@ def cosmos_clans_container():
     return CosmosClient(endpoint, credential=key).get_database_client(database).get_container_client(container)
 
 
+def cosmos_wars_container():
+    if storage_backend() != "cosmos":
+        return None
+    endpoint = os.environ.get("COSMOS_ENDPOINT", "").strip()
+    key = os.environ.get("COSMOS_KEY", "").strip()
+    database = os.environ.get("COSMOS_DATABASE", "clan-war-board").strip()
+    container = os.environ.get("COSMOS_WARS_CONTAINER", "wars").strip()
+    if not endpoint or not key:
+        raise RuntimeError("Cosmos storage is selected but COSMOS_ENDPOINT/COSMOS_KEY are missing")
+    from azure.cosmos import CosmosClient
+    return CosmosClient(endpoint, credential=key).get_database_client(database).get_container_client(container)
+
+
 def list_plugin_clans(limit: int = 100) -> list[dict[str, Any]]:
     container = cosmos_clans_container()
     if container is None:
@@ -211,6 +232,261 @@ def save_plugin_clan(row: dict[str, Any]) -> None:
     container.upsert_item(document)
 
 
+def _save_session(session: dict[str, Any]) -> None:
+    container = cosmos_clans_container()
+    if container is not None:
+        document = dict(session)
+        document["normalizedName"] = session["id"]
+        if session.get("_etag"):
+            from azure.core import MatchConditions
+            saved = container.replace_item(
+                item=session["id"],
+                body=document,
+                etag=session["_etag"],
+                match_condition=MatchConditions.IfNotModified,
+            )
+        else:
+            saved = container.upsert_item(document)
+        session.clear()
+        session.update(saved)
+    INSTALL_SESSIONS[session["id"]] = session
+
+
+def _load_session(session_id: str) -> dict[str, Any] | None:
+    cached = INSTALL_SESSIONS.get(session_id)
+    if cached is not None:
+        return cached
+    container = cosmos_clans_container()
+    if container is None:
+        return None
+    try:
+        session = container.read_item(item=session_id, partition_key=session_id)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 404:
+            return None
+        raise
+    if session.get("docType") != "installationSession":
+        return None
+    INSTALL_SESSIONS[session_id] = session
+    return session
+
+
+def _save_war_document(row: dict[str, Any]) -> None:
+    container = cosmos_wars_container()
+    if container is not None:
+        container.upsert_item(dict(row))
+
+
+def _load_challenge(challenge_id: str) -> dict[str, Any] | None:
+    cached = next((row for row in CHALLENGES if row.get("id") == challenge_id), None)
+    if cached is not None:
+        return cached
+    container = cosmos_wars_container()
+    if container is None:
+        return None
+    query = "SELECT * FROM c WHERE c.id = @id AND c.docType = 'challenge'"
+    rows = list(container.query_items(query=query, parameters=[{"name": "@id", "value": challenge_id}], enable_cross_partition_query=True))
+    if not rows:
+        return None
+    CHALLENGES.append(rows[0])
+    return rows[0]
+
+
+def _header(headers: dict[str, str] | None, name: str) -> str:
+    for key, value in (headers or {}).items():
+        if key.lower() == name.lower():
+            return str(value).strip()
+    return ""
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _issue_session(install_hash: str, clan_id: str, rank: int, now: int | None = None) -> dict[str, Any]:
+    issued_at = int(time.time() if now is None else now)
+    token = secrets.token_urlsafe(32)
+    capabilities = ["member:read", "telemetry:write"]
+    if rank >= LEADER_RANK_MINIMUM:
+        capabilities.extend(["leader:write", "challenge:write"])
+    session = {
+        "id": _token_hash(token),
+        "docType": "installationSession",
+        "installHash": install_hash,
+        "clanId": clan_id,
+        "observedClanRank": rank,
+        "capabilities": capabilities,
+        "issuedAtEpoch": issued_at,
+        "expiresAtEpoch": issued_at + SESSION_SECONDS,
+        "nonces": [],
+        "requestTimes": [],
+        "trustLevel": "runelite_client_observed_rank",
+    }
+    _save_session(session)
+    return {
+        "sessionToken": token,
+        "expiresAt": datetime.fromtimestamp(session["expiresAtEpoch"], timezone.utc).isoformat(),
+        "capabilities": capabilities,
+        "trustLevel": session["trustLevel"],
+    }
+
+
+def authorize_write(headers: dict[str, str] | None, capability: str, now: int | None = None) -> dict[str, Any]:
+    current = int(time.time() if now is None else now)
+    authorization = _header(headers, "Authorization")
+    if not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "missing_session"}
+    session = _load_session(_token_hash(authorization[7:].strip()))
+    if session is None or session.get("revokedAtEpoch"):
+        return {"ok": False, "error": "invalid_session"}
+    if int(session.get("expiresAtEpoch") or 0) <= current:
+        return {"ok": False, "error": "expired_session"}
+    if capability not in session.get("capabilities", []):
+        return {"ok": False, "error": "capability_denied"}
+    try:
+        request_time = int(_header(headers, "X-CWB-Timestamp"))
+        nonce = str(uuid.UUID(_header(headers, "X-CWB-Nonce")))
+    except (TypeError, ValueError, AttributeError):
+        return {"ok": False, "error": "invalid_request_proof"}
+    if abs(current - request_time) > WRITE_CLOCK_SKEW_SECONDS:
+        return {"ok": False, "error": "stale_request"}
+    nonces = session.setdefault("nonces", [])
+    if nonce in nonces:
+        return {"ok": False, "error": "replayed_request"}
+    recent = [value for value in session.setdefault("requestTimes", []) if current - int(value) < 60]
+    if len(recent) >= WRITE_RATE_LIMIT:
+        return {"ok": False, "error": "rate_limited", "retryAfter": 60}
+    nonces.append(nonce)
+    session["nonces"] = nonces[-100:]
+    recent.append(current)
+    session["requestTimes"] = recent
+    try:
+        _save_session(session)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) in {409, 412}:
+            INSTALL_SESSIONS.pop(str(session.get("id") or ""), None)
+            return {"ok": False, "error": "concurrent_request"}
+        raise
+    return {"ok": True, "session": session}
+
+
+def rotate_installation_session(headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "member:read")
+    if not authorized.get("ok"):
+        return authorized
+    session = authorized["session"]
+    session["revokedAtEpoch"] = int(time.time())
+    _save_session(session)
+    issued = _issue_session(session["installHash"], session["clanId"], int(session.get("observedClanRank") or -1))
+    return {"ok": True, **issued}
+
+
+def create_availability(payload: dict[str, Any] | None, headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "leader:write")
+    if not authorized.get("ok"):
+        return authorized
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        starts_at = datetime.fromisoformat(str(payload.get("startsAt") or "").replace("Z", "+00:00"))
+        duration = int(payload.get("durationMinutes"))
+        combat_min = int(payload.get("combatMin", 3))
+        combat_max = int(payload.get("combatMax", 126))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_availability"}
+    if starts_at.tzinfo is None or not 5 <= duration <= 180 or combat_min < 3 or combat_max > 126 or combat_min > combat_max:
+        return {"ok": False, "error": "invalid_availability"}
+    session = authorized["session"]
+    row = {
+        "id": str(uuid.uuid4()),
+        "docType": "availability",
+        "clanPairKey": session["clanId"],
+        "creatorClanId": session["clanId"],
+        "startsAt": starts_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "durationMinutes": duration,
+        "combatMin": combat_min,
+        "combatMax": combat_max,
+        "notes": str(payload.get("notes") or "").strip()[:240],
+        "createdAt": utc_now_iso(),
+        "status": "open",
+    }
+    AVAILABILITY.append(row)
+    _save_war_document(row)
+    return {"ok": True, "availability": row}
+
+
+def create_challenge(payload: dict[str, Any] | None, headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "challenge:write")
+    if not authorized.get("ok"):
+        return authorized
+    payload = payload if isinstance(payload, dict) else {}
+    session = authorized["session"]
+    opponent = normalize_clan_id(str(payload.get("opponentClanId") or ""))
+    if not opponent or opponent == session["clanId"]:
+        return {"ok": False, "error": "invalid_opponent"}
+    try:
+        normalized_terms = normalize_fight_terms(payload.get("terms") or {})
+    except ValueError as exc:
+        return {"ok": False, "error": "invalid_terms", "message": str(exc)}
+    row = {
+        "id": str(uuid.uuid4()),
+        "docType": "challenge",
+        "clanPairKey": "|".join(sorted([session["clanId"], opponent])),
+        "creatorClanId": session["clanId"],
+        "opponentClanId": opponent,
+        "terms": normalized_terms,
+        "termsHash": terms_hash(normalized_terms),
+        "acceptedBy": [session["clanId"]],
+        "status": "proposed",
+        "createdAt": utc_now_iso(),
+        "updatedAt": utc_now_iso(),
+    }
+    CHALLENGES.append(row)
+    _save_war_document(row)
+    return {"ok": True, "challenge": row}
+
+
+def get_challenges(headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "member:read")
+    if not authorized.get("ok"):
+        return authorized
+    clan_id = str(authorized["session"]["clanId"])
+    container = cosmos_wars_container()
+    if container is None:
+        rows = [row for row in CHALLENGES if clan_id in {row.get("creatorClanId"), row.get("opponentClanId")}]
+    else:
+        query = "SELECT * FROM c WHERE c.docType = 'challenge' AND (c.creatorClanId = @clan OR c.opponentClanId = @clan) ORDER BY c.updatedAt DESC"
+        rows = list(container.query_items(query=query, parameters=[{"name": "@clan", "value": clan_id}], enable_cross_partition_query=True))
+    visible = [{key: value for key, value in row.items() if key not in {"_etag", "_rid", "_self", "_attachments", "_ts", "docType", "clanPairKey"}} for row in rows]
+    return {"ok": True, "challenges": visible}
+
+
+def update_challenge(challenge_id: str, payload: dict[str, Any] | None, headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "challenge:write")
+    if not authorized.get("ok"):
+        return authorized
+    challenge = _load_challenge(challenge_id)
+    if challenge is None:
+        return {"ok": False, "error": "challenge_not_found"}
+    actor = str(authorized["session"]["clanId"])
+    participants = {challenge.get("creatorClanId"), challenge.get("opponentClanId")}
+    if actor not in participants:
+        return {"ok": False, "error": "challenge_forbidden"}
+    payload = payload if isinstance(payload, dict) else {}
+    action = str(payload.get("action") or "").strip().lower()
+    if action == "cancel" and actor != challenge.get("creatorClanId"):
+        return {"ok": False, "error": "challenge_forbidden"}
+    if action == "reject" and actor != challenge.get("opponentClanId"):
+        return {"ok": False, "error": "challenge_forbidden"}
+    try:
+        updated = apply_challenge_action(challenge, action, actor, payload.get("terms"))
+    except ValueError as exc:
+        return {"ok": False, "error": "invalid_challenge_action", "message": str(exc)}
+    challenge.clear()
+    challenge.update(updated)
+    _save_war_document(challenge)
+    return {"ok": True, "challenge": challenge}
+
+
 def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
     install_id = str(payload.get("installId") or "").strip()
@@ -241,11 +517,15 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
     members = row.setdefault("members", [])
     member = next((item for item in members if item.get("installHash") == install_hash), None)
     public_stats = bool(payload.get("publicStats", False))
+    try:
+        observed_rank = int(payload.get("clanRank") or -1)
+    except (TypeError, ValueError):
+        observed_rank = -1
     member_payload = {
         "installHash": install_hash,
         "displayName": player_name if public_stats and player_name else "Private member",
         "public": public_stats,
-        "clanRank": int(payload.get("clanRank") or -1),
+        "clanRank": observed_rank,
         "pluginVersion": str(payload.get("pluginVersion") or "unknown")[:32],
         "lastSeenAt": now,
     }
@@ -257,12 +537,14 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
     row["member_count"] = len(members)
     row["updatedAt"] = now
     save_plugin_clan(row)
+    session = _issue_session(install_hash, clan_id, observed_rank)
     return {
         "ok": True,
         "clanId": clan_id,
         "registeredMembers": row["member_count"],
         "publicStats": public_stats,
         "serverTime": now,
+        **session,
     }
 
 
@@ -361,11 +643,56 @@ def get_clan(clan_id: str) -> dict[str, Any] | None:
     return None
 
 def get_public_availability() -> dict[str, Any]:
+    container = cosmos_wars_container()
+    if container is None:
+        rows = list(AVAILABILITY)
+    else:
+        query = "SELECT * FROM c WHERE c.docType = 'availability' AND c.status = 'open' ORDER BY c.startsAt ASC"
+        rows = list(container.query_items(query=query, enable_cross_partition_query=True))
+    availability = [
+        {
+            "id": row.get("id"),
+            "creatorClanId": row.get("creatorClanId"),
+            "startsAt": row.get("startsAt"),
+            "durationMinutes": row.get("durationMinutes"),
+            "combatMin": row.get("combatMin"),
+            "combatMax": row.get("combatMax"),
+            "notes": row.get("notes"),
+            "status": row.get("status"),
+        }
+        for row in rows
+    ]
+    if container is None:
+        challenge_rows = list(CHALLENGES)
+    else:
+        challenge_rows = list(container.query_items(
+            query="SELECT * FROM c WHERE c.docType = 'challenge' AND (c.status = 'confirmed' OR c.status = 'completed')",
+            enable_cross_partition_query=True,
+        ))
+
+    def public_fight(row: dict[str, Any]) -> dict[str, Any]:
+        terms_value = row.get("terms")
+        terms: dict[str, Any] = terms_value if isinstance(terms_value, dict) else {}
+        return {
+            "id": row.get("id"),
+            "creatorClanId": row.get("creatorClanId"),
+            "opponentClanId": row.get("opponentClanId"),
+            "startsAt": terms.get("startsAt"),
+            "durationMinutes": terms.get("durationMinutes"),
+            "combatMin": terms.get("combatMin"),
+            "combatMax": terms.get("combatMax"),
+            "status": row.get("status"),
+        }
+
+    scheduled = [public_fight(row) for row in challenge_rows if row.get("status") == "confirmed"]
+    history = [public_fight(row) for row in challenge_rows if row.get("status") == "completed"]
     return {
         "generatedAt": utc_now_iso(),
         "source": "Clan War Board plugin submissions",
         "privacy": "public availability only; exact accepted world/rally notes hidden until agreement",
-        "availability": [],
+        "availability": availability,
+        "scheduled": scheduled,
+        "history": history,
         "emptyState": "No real scheduled fights have been posted yet. The next step is enabling authenticated RuneLite leader submissions.",
         "fightSetupFields": FIGHT_SETUP_FIELDS,
     }
@@ -464,6 +791,10 @@ def get_competitive_leaderboard() -> dict[str, Any]:
     }
 
 def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[str, str] | None = None) -> dict[str, Any]:
+    authorized = authorize_write(client_headers, "telemetry:write")
+    if not authorized.get("ok"):
+        return authorized
+    session_clan_id = str(authorized["session"]["clanId"])
     payload = payload or {}
     events = payload.get("events") if isinstance(payload, dict) else []
     if not isinstance(events, list):
@@ -475,6 +806,8 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
             continue
         event_type = str(event.get("type") or "")
         if event_type not in {"heartbeat", "damage_dealt", "damage_taken", "death", "kill_candidate", "return", "location_sample", "third_party_damage"}:
+            continue
+        if normalize_clan_id(str(event.get("clanName") or "")) != session_clan_id:
             continue
         accepted_events.append(
             {
