@@ -311,7 +311,8 @@ class LeaderboardTests(unittest.TestCase):
             "terms": {"world": 330, "startsAt": starts_at, "durationMinutes": 30},
         })
         events = {"events": [
-            {"type": "damage_dealt", "clanName": "TRAPISTAN", "amount": 31, "world": 330, "tick": 10, "timestamp": now_ms},
+            {"type": "damage_dealt", "clanName": "TRAPISTAN", "opponentName": "Enemy", "amount": 31, "world": 330, "tick": 10, "timestamp": now_ms,
+             "evidence": "local_player_hitsplat", "confidence": "high", "relation": "non_own_clan", "regionId": 12850, "x": 3200, "y": 3600, "plane": 0},
             {"type": "friendly_fire_damage", "clanName": "TRAPISTAN", "amount": 4, "world": 330, "tick": 10, "timestamp": now_ms + 1},
             {"type": "damage_taken", "clanName": "TRAPISTAN", "amount": 18, "world": 330, "tick": 11, "timestamp": now_ms + 2},
             {"type": "kill_candidate", "clanName": "TRAPISTAN", "amount": 1, "world": 330, "tick": 12, "timestamp": now_ms + 2},
@@ -347,6 +348,24 @@ class LeaderboardTests(unittest.TestCase):
         })
         reinstalled_metrics = get_my_player_metrics(self.auth_headers(reinstalled["sessionToken"]))
         self.assertEqual(reinstalled_metrics["metrics"], result["metrics"])
+
+        leaderboard.CHALLENGES[0]["status"] = "completed"
+        summary = get_public_fight_summary("fight-1")
+        self.assertIsNotNone(summary)
+        analytics = summary["analytics"]
+        self.assertEqual(analytics["totals"]["damageInflicted"], 35)
+        self.assertEqual(analytics["byClan"]["trapistan"]["eventsTracked"], 8)
+        self.assertIn("Enemy", analytics["byOpponent"])
+        self.assertEqual(analytics["dimensions"]["confidence"]["high"], 1)
+        self.assertEqual(analytics["locationHotspots"][0]["regionId"], 12850)
+        event = next(row for row in analytics["events"] if row["type"] == "damage_dealt")
+        self.assertEqual(event["opponentName"], "Enemy")
+        self.assertTrue(event["player"].startswith("Private "))
+        self.assertEqual(event["evidence"], "local_player_hitsplat")
+        self.assertEqual(event["location"]["x"], 3200)
+        battles = get_past_battles()["battles"]
+        self.assertEqual(battles[0]["fightId"], "fight-1")
+        self.assertEqual(battles[0]["eventCount"], 8)
 
 
 if __name__ == "__main__":

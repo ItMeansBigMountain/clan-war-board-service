@@ -81,6 +81,15 @@
       .empty { text-align: center; padding: 32px; background: #eee3c9; border: 2px dashed #94866d; color: var(--muted); }
       .clan-img { height: 130px; margin: -14px -14px 12px; background: #3a301d center/cover no-repeat; border-bottom: 2px solid var(--body-border); }
       .setup-grid { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }
+      .analytics { display:grid; gap:16px; margin-top:18px; }
+      .analytics.hidden { display:none; }
+      .table-wrap { overflow-x:auto; background:#eee3c9; border:2px solid var(--body-border); }
+      table { width:100%; border-collapse:collapse; min-width:980px; font-size:13px; }
+      th, td { padding:9px 10px; border-bottom:1px solid #b8a282; text-align:left; vertical-align:top; }
+      th { position:sticky; top:0; background:#4a3d28; color:#f7ead0; }
+      tbody tr:nth-child(even) { background:rgba(188,167,130,.45); }
+      .mono { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-size:12px; }
+      .compact-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
       footer { color: #f8ead0; text-shadow: 0 2px #18140c; padding: 34px 0 60px; }
       @media (max-width: 900px) { .hero, .grid { grid-template-columns: 1fr; } .stats, .setup-grid { grid-template-columns: repeat(2,1fr); } header { flex-direction: column; align-items: flex-start; } }
       @media (max-width: 560px) { .stats, .setup-grid, .search { grid-template-columns: 1fr; } }
@@ -145,8 +154,19 @@
         </section>
 
         <section class="page" data-page="/results">
-          <div class="page-head"><div class="eyebrow">War records</div><h2>Completed battle results.</h2><p>Published results focus on what matters: duration, participants, kills, returns, pressure, interference, and the agreed outcome.</p></div>
+          <div class="page-head"><div class="eyebrow">War records</div><h2>Completed battle results.</h2><p>Open any completed fight for cumulative clan, player, opponent, confidence, evidence, location, and event-by-event analysis.</p></div>
           <div id="battle-list"></div>
+          <div id="fight-analytics" class="analytics hidden">
+            <div class="page-head"><div class="eyebrow">Verbose fight analytics</div><h2 id="analytics-title">Fight details</h2><p id="analytics-terms"></p></div>
+            <div id="analytics-totals" class="compact-grid"></div>
+            <div class="grid" id="analytics-dimensions"></div>
+            <div class="page-head"><h2>Clan totals</h2></div><div id="analytics-clans" class="grid"></div>
+            <div class="page-head"><h2>Player totals</h2></div><div id="analytics-players" class="grid"></div>
+            <div class="page-head"><h2>Opponent interactions</h2></div><div id="analytics-opponents" class="grid"></div>
+            <div class="page-head"><h2>Location hotspots</h2></div><div id="analytics-locations" class="grid"></div>
+            <div class="page-head"><h2>Individual event timeline</h2><p>Each row preserves what the RuneLite client observed, how it was attributed, and the confidence of that attribution.</p></div>
+            <div class="table-wrap"><table><thead><tr><th>Time</th><th>Clan / player</th><th>Event</th><th>Opponent</th><th>Amount</th><th>Evidence</th><th>Confidence</th><th>Relation</th><th>Location</th></tr></thead><tbody id="analytics-events"></tbody></table></div>
+          </div>
         </section>
 
       </main>
@@ -158,7 +178,8 @@
       const $ = (id) => document.getElementById(id);
       const fmt = new Intl.NumberFormat();
       let latestClans = [];
-      const pill = (text, cls='') => `<span class="pill ${cls}">${text}</span>`;
+      const pill = (text, cls='') => `<span class="pill ${cls}">${esc(text)}</span>`;
+      const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       async function getJson(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); }
       function route() {
         const allowed = ['/', '/clans', '/fights', '/leaderboard', '/results'];
@@ -192,6 +213,34 @@
         const data = await getJson(q ? `/api/clans?q=${encodeURIComponent(q)}` : '/api/clans');
         renderClans(data.results || data.clans || []);
       }
+      const metricLabel = (key) => key.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase());
+      function metricCards(metrics) {
+        return Object.entries(metrics || {}).map(([key,value]) => `<div class="stat panel"><b>${fmt.format(value || 0)}</b><span>${esc(metricLabel(key))}</span></div>`).join('');
+      }
+      function entityCards(collection) {
+        return Object.entries(collection || {}).map(([name,metrics]) => `<div class="card panel"><h3>${esc(name)}</h3><div class="row">${Object.entries(metrics).map(([key,value]) => `<div class="metric"><strong>${fmt.format(value || 0)}</strong>${esc(metricLabel(key))}</div>`).join('')}</div></div>`).join('');
+      }
+      function dimensionCard(title, values) {
+        return `<div class="card panel"><h3>${esc(title)}</h3><div>${Object.entries(values || {}).sort((a,b)=>b[1]-a[1]).map(([key,value]) => pill(`${metricLabel(key)}: ${fmt.format(value)}`, key === 'high' ? 'green' : '')).join('') || pill('No observations')}</div></div>`;
+      }
+      async function loadFightAnalytics(fightId) {
+        if (!fightId) return;
+        const data = await getJson(`/api/public/fights/${encodeURIComponent(fightId)}/summary`);
+        const fight = data.fight || {}, terms = fight.terms || {}, analytics = data.analytics || {};
+        $('fight-analytics').classList.remove('hidden');
+        $('analytics-title').textContent = `${fight.creatorClanId || 'Unknown'} vs ${fight.opponentClanId || 'Unknown'}`;
+        $('analytics-terms').textContent = `World ${terms.world || '?'} · ${terms.location || 'Location unavailable'} · ${terms.startsAt || 'Time unavailable'} · ${terms.durationMinutes || 0} minutes · Combat ${terms.combatMin || '?'}-${terms.combatMax || '?'} · ${terms.rules || 'No rules recorded'}`;
+        $('analytics-totals').innerHTML = metricCards(analytics.totals);
+        $('analytics-dimensions').innerHTML = Object.entries(analytics.dimensions || {}).map(([key,value]) => dimensionCard(metricLabel(key), value)).join('');
+        $('analytics-clans').innerHTML = entityCards(analytics.byClan) || emptyCard('No clan observations', 'No clan telemetry was stored for this fight.');
+        $('analytics-players').innerHTML = entityCards(analytics.byPlayer) || emptyCard('No player observations', 'No player telemetry was stored for this fight.');
+        $('analytics-opponents').innerHTML = entityCards(analytics.byOpponent) || emptyCard('No opponent interactions', 'No named opponent interactions were observed.');
+        $('analytics-locations').innerHTML = (analytics.locationHotspots || []).map(l => `<div class="card panel"><h3>Region ${fmt.format(l.regionId || 0)}</h3><p class="mono">${fmt.format(l.x || 0)}, ${fmt.format(l.y || 0)}, plane ${fmt.format(l.plane || 0)}</p><div>${pill(`${fmt.format(l.samples || 0)} observations`, 'gold')}</div></div>`).join('') || emptyCard('No location samples', 'No valid RuneLite world locations were observed.');
+        $('analytics-events').innerHTML = (analytics.events || []).map(e => {
+          const l=e.location||{};
+          return `<tr><td class="mono">${esc(e.observedAt || e.timestamp)}</td><td><b>${esc(e.clanId)}</b><br>${esc(e.player)}</td><td>${esc(metricLabel(e.type || 'unknown'))}</td><td>${esc(e.opponentName || '—')}</td><td>${fmt.format(e.amount || 0)}</td><td>${esc(metricLabel(e.evidence || 'unknown'))}</td><td>${pill(e.confidence || 'unknown', e.confidence === 'high' ? 'green' : '')}</td><td>${esc(metricLabel(e.relation || 'unknown'))}</td><td class="mono">W${fmt.format(e.world || 0)} R${fmt.format(l.regionId || 0)}<br>${fmt.format(l.x || 0)},${fmt.format(l.y || 0)},p${fmt.format(l.plane || 0)}</td></tr>`;
+        }).join('');
+      }
       async function load() {
         showPage();
         const [clans, availability, battles, schema, theme, leaderboard, challenge, judging] = await Promise.all([getJson('/api/clans'), getJson('/api/public/availability'), getJson('/api/public/battles'), getJson('/api/fight-setup/schema'), getJson('/api/theme/assets'), getJson('/api/leaderboard'), getJson('/api/challenge-system'), getJson('/api/judging-system')]);
@@ -200,11 +249,12 @@
         renderClans(clans.clans || []);
         $('stat-fights').textContent = fmt.format((availability.availability || []).length);
         $('upcoming-grid').innerHTML = availability.availability?.length ? availability.availability.map(f => `<div class="card panel"><h3>${f.creatorClanName}</h3></div>`).join('') : emptyCard('No open challenges yet', 'When clan leaders post public fight availability, challenges will appear here.');
-        $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${b.winnerClanName || b.fightId}</h3></div>`).join('') : emptyCard('No published results yet', 'Completed battle records will appear here after both sides have fought and the result is ready to publish.');
+        $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${esc(b.creatorClanId || 'Unknown')} vs ${esc(b.opponentClanId || 'Unknown')}</h3><div>${pill(`W${b.world || '?'}`)}${pill(`${fmt.format(b.eventCount || 0)} events`, 'gold')}${pill(`${fmt.format(b.totals?.damageInflicted || 0)} damage`, 'red')}</div><p>${esc(b.startsAt || 'Time unavailable')} · ${fmt.format(b.durationMinutes || 0)} minutes · ${esc(b.location || 'Location unavailable')}</p><a class="btn" style="display:inline-flex" href="/results?fight=${encodeURIComponent(b.fightId)}">View verbose analytics</a></div>`).join('') : emptyCard('No published results yet', 'Completed battle records will appear here after both sides have fought and the result is ready to publish.');
         $('home-setup-grid').innerHTML = schema.requiredFields.map(f => `<div class="stat"><b>${f.label}</b><span>${f.privacy}</span></div>`).join('');
         $('challenge-grid').innerHTML = challenge.leaderActions.map(a => `<div class="card panel"><h3>${a.name}</h3><p>${a.description}</p></div>`).join('');
         $('leaderboard-grid').innerHTML = leaderboard.standings.length ? leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(c.clan_type || 'Plugin Clan', 'gold')}${pill(c.ratingStatus.replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('') : emptyCard('No ranked clans yet', 'Leaderboard entries unlock after plugin clans complete verified fights.');
         $('judging-grid').innerHTML = judging.winnerSignals.map(s => `<div class="card panel"><h3>${s.name}</h3><div>${pill(`${s.weight} weight`, s.weight < 0 ? 'red' : 'green')}</div><p>${s.description}</p></div>`).join('');
+        if (route() === '/results') await loadFightAnalytics(new URLSearchParams(location.search).get('fight'));
       }
       document.querySelectorAll('a[href^="/"]').forEach(a => {
         a.addEventListener('click', e => {

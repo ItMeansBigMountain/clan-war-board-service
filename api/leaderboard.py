@@ -335,6 +335,131 @@ def _player_telemetry(player_hash: str, install_hash: str) -> list[dict[str, Any
     return list(container.query_items(query=query, parameters=parameters, enable_cross_partition_query=True))
 
 
+def _fight_telemetry(fight_id: str) -> list[dict[str, Any]]:
+    container = cosmos_wars_container()
+    if container is None:
+        return [row for row in TELEMETRY_EVENTS if row.get("fightId") == fight_id]
+    return list(container.query_items(
+        query="SELECT * FROM c WHERE c.docType = 'telemetryEvent' AND c.fightId = @fight",
+        parameters=[{"name": "@fight", "value": fight_id}],
+        enable_cross_partition_query=True,
+    ))
+
+
+def _empty_metrics() -> dict[str, int]:
+    return {
+        "fightsObserved": 0,
+        "observedKills": 0,
+        "deaths": 0,
+        "returns": 0,
+        "opponentDamage": 0,
+        "friendlyFireDamage": 0,
+        "damageInflicted": 0,
+        "damageReceived": 0,
+        "thirdPartyDamage": 0,
+        "unverifiedExternalDamage": 0,
+        "unattributedDamageReceived": 0,
+        "activitySamples": 0,
+        "eventsTracked": 0,
+    }
+
+
+def _accumulate_metric(metrics: dict[str, int], row: dict[str, Any]) -> None:
+    event_type = str(row.get("type") or "")
+    amount = max(0, int(row.get("amount") or 0))
+    relation = str(row.get("relation") or "unknown")
+    metrics["eventsTracked"] += 1
+    if event_type == "kill_candidate":
+        metrics["observedKills"] += max(1, amount)
+    elif event_type == "death":
+        metrics["deaths"] += max(1, amount)
+    elif event_type == "return":
+        metrics["returns"] += max(1, amount)
+    elif event_type == "damage_dealt":
+        metrics["opponentDamage"] += amount
+        metrics["damageInflicted"] += amount
+    elif event_type == "friendly_fire_damage":
+        metrics["friendlyFireDamage"] += amount
+        metrics["damageInflicted"] += amount
+    elif event_type == "damage_taken":
+        metrics["damageReceived"] += amount
+        if relation == "non_own_clan":
+            metrics["unverifiedExternalDamage"] += amount
+        elif relation in {"unattributed", "unknown"}:
+            metrics["unattributedDamageReceived"] += amount
+    elif event_type == "third_party_damage":
+        metrics["thirdPartyDamage"] += amount
+    elif event_type in {"heartbeat", "location_sample"}:
+        metrics["activitySamples"] += 1
+
+
+def _public_event(row: dict[str, Any]) -> dict[str, Any]:
+    player = row.get("publicPlayerName") or ("Private " + str(row.get("playerHash") or row.get("installHash") or "member")[:8])
+    return {
+        "id": row.get("id"),
+        "fightId": row.get("fightId"),
+        "clanId": row.get("clanId"),
+        "player": player,
+        "playerPublic": bool(row.get("playerPublic")),
+        "type": row.get("type"),
+        "opponentName": row.get("opponentName"),
+        "amount": int(row.get("amount") or 0),
+        "world": int(row.get("world") or 0),
+        "tick": int(row.get("tick") or 0),
+        "timestamp": int(row.get("timestamp") or 0),
+        "observedAt": row.get("observedAt"),
+        "evidence": row.get("evidence") or "legacy_client_observation",
+        "confidence": row.get("confidence") or "unknown",
+        "relation": row.get("relation") or "unknown",
+        "location": row.get("location") or {"regionId": 0, "x": 0, "y": 0, "plane": 0},
+    }
+
+
+def _aggregate_fight_events(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    events = sorted((_public_event(row) for row in rows), key=lambda row: (row["timestamp"], row["tick"], str(row["id"])))
+    totals = _empty_metrics()
+    totals["fightsObserved"] = 1 if events else 0
+    dimensions: dict[str, dict[str, int]] = {"eventTypes": {}, "confidence": {}, "evidence": {}, "relations": {}}
+    clan_metrics: dict[str, dict[str, int]] = {}
+    player_metrics: dict[str, dict[str, int]] = {}
+    opponent_metrics: dict[str, dict[str, int]] = {}
+    locations: dict[str, dict[str, Any]] = {}
+    raw_by_id = {str(row.get("id")): row for row in rows}
+    for event in events:
+        raw = raw_by_id.get(str(event["id"]), event)
+        _accumulate_metric(totals, raw)
+        for dimension, value in (("eventTypes", event["type"]), ("confidence", event["confidence"]),
+                                 ("evidence", event["evidence"]), ("relations", event["relation"])):
+            key = str(value or "unknown")
+            dimensions[dimension][key] = dimensions[dimension].get(key, 0) + 1
+        for collection, key in ((clan_metrics, str(event["clanId"] or "unknown")),
+                                (player_metrics, str(event["player"] or "unknown"))):
+            metrics = collection.setdefault(key, _empty_metrics())
+            metrics["fightsObserved"] = 1
+            _accumulate_metric(metrics, raw)
+        opponent = str(event.get("opponentName") or "").strip()
+        if opponent:
+            metrics = opponent_metrics.setdefault(opponent, _empty_metrics())
+            metrics["fightsObserved"] = 1
+            _accumulate_metric(metrics, raw)
+        location = event.get("location") or {}
+        region_id = int(location.get("regionId") or 0)
+        if region_id:
+            key = f"{region_id}:{int(location.get('x') or 0)}:{int(location.get('y') or 0)}:{int(location.get('plane') or 0)}"
+            hotspot = locations.setdefault(key, {**location, "samples": 0})
+            hotspot["samples"] += 1
+    return {
+        "totals": totals,
+        "dimensions": dimensions,
+        "byClan": clan_metrics,
+        "byPlayer": player_metrics,
+        "byOpponent": opponent_metrics,
+        "locationHotspots": sorted(locations.values(), key=lambda row: (-row["samples"], row["regionId"])),
+        "events": events,
+    }
+
+
+
 def _header(headers: dict[str, str] | None, name: str) -> str:
     for key, value in (headers or {}).items():
         if key.lower() == name.lower():
@@ -745,18 +870,90 @@ def get_public_availability() -> dict[str, Any]:
     }
 
 
+def _fight_is_completed(fight: dict[str, Any]) -> bool:
+    if fight.get("status") == "completed":
+        return True
+    if fight.get("status") != "confirmed":
+        return False
+    terms = fight.get("terms")
+    if not isinstance(terms, dict):
+        return False
+    try:
+        starts_at = datetime.fromisoformat(str(terms.get("startsAt") or "").replace("Z", "+00:00"))
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    try:
+        duration = int(terms.get("durationMinutes") or 0)
+    except (TypeError, ValueError):
+        return False
+    return duration > 0 and datetime.now(timezone.utc) >= starts_at + timedelta(minutes=duration)
+
+
 def get_past_battles() -> dict[str, Any]:
+    container = cosmos_wars_container()
+    if container is None:
+        fights = [row for row in CHALLENGES if _fight_is_completed(row)]
+    else:
+        candidates = list(container.query_items(
+            query="SELECT * FROM c WHERE c.docType = 'challenge' AND c.status IN ('confirmed', 'completed')",
+            enable_cross_partition_query=True,
+        ))
+        fights = [row for row in candidates if _fight_is_completed(row)]
+    battles = []
+    for fight in fights:
+        analytics = _aggregate_fight_events(_fight_telemetry(str(fight.get("id") or "")))
+        terms_value = fight.get("terms")
+        terms: dict[str, Any] = terms_value if isinstance(terms_value, dict) else {}
+        battles.append({
+            "fightId": fight.get("id"),
+            "creatorClanId": fight.get("creatorClanId"),
+            "opponentClanId": fight.get("opponentClanId"),
+            "startsAt": terms.get("startsAt"),
+            "durationMinutes": terms.get("durationMinutes"),
+            "world": terms.get("world"),
+            "location": terms.get("location"),
+            "totals": analytics["totals"],
+            "eventCount": len(analytics["events"]),
+        })
+    battles.sort(key=lambda row: str(row.get("startsAt") or ""), reverse=True)
     return {
         "generatedAt": utc_now_iso(),
         "source": "Clan War Board completed fight telemetry",
-        "privacy": "completed sanitized analytics only",
-        "battles": [],
+        "privacy": "completed fights only; private players use stable anonymous labels",
+        "battles": battles,
         "emptyState": "No real completed Clan War Board fights have been published yet.",
     }
 
 
 def get_public_fight_summary(fight_id: str) -> dict[str, Any] | None:
-    return None
+    fight = _load_challenge(fight_id)
+    if fight is None or not _fight_is_completed(fight):
+        return None
+    terms_value = fight.get("terms")
+    terms: dict[str, Any] = terms_value if isinstance(terms_value, dict) else {}
+    return {
+        "generatedAt": utc_now_iso(),
+        "source": "persisted completed-fight telemetry",
+        "privacy": "opponent names are retained for verbose event analysis; opted-out participants use stable anonymous labels",
+        "fight": {
+            "id": fight.get("id"),
+            "creatorClanId": fight.get("creatorClanId"),
+            "opponentClanId": fight.get("opponentClanId"),
+            "status": "completed",
+            "terms": {
+                "world": terms.get("world"),
+                "location": terms.get("location"),
+                "startsAt": terms.get("startsAt"),
+                "durationMinutes": terms.get("durationMinutes"),
+                "combatMin": terms.get("combatMin"),
+                "combatMax": terms.get("combatMax"),
+                "rules": terms.get("rules"),
+            },
+        },
+        "analytics": _aggregate_fight_events(_fight_telemetry(fight_id)),
+    }
 
 
 def get_fight_setup_schema() -> dict[str, Any]:
@@ -863,14 +1060,27 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
             world = int(event.get("world") or 0)
             tick = max(0, int(event.get("tick") or 0))
             timestamp_ms = int(event.get("timestamp") or 0)
+            region_id = max(0, int(event.get("regionId") or 0))
+            x = max(0, int(event.get("x") or 0))
+            y = max(0, int(event.get("y") or 0))
+            plane = int(event.get("plane") or 0)
         except (TypeError, ValueError):
+            continue
+        evidence = str(event.get("evidence") or "unspecified")[:64]
+        confidence = str(event.get("confidence") or "unknown")[:32]
+        relation = str(event.get("relation") or "unknown")[:32]
+        if confidence not in {"high", "medium", "low", "unknown", "high_amount_low_source"}:
+            confidence = "unknown"
+        if relation not in {"self", "own_clan", "non_own_clan", "unattributed", "none", "unknown"}:
+            relation = "unknown"
+        if plane < 0 or plane > 3 or x > 20000 or y > 20000 or region_id > 65535:
             continue
         fight = _fight_for_event(session_clan_id, world, timestamp_ms)
         if fight is None:
             continue
         identity = "|".join([
             install_hash, str(fight.get("id") or ""), event_type, str(timestamp_ms), str(tick),
-            str(world), str(amount), str(event.get("opponentName") or ""),
+            str(world), str(amount), str(event.get("opponentName") or ""), evidence, relation,
         ])
         row = {
             "id": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
@@ -889,7 +1099,11 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
             "tick": tick,
             "timestamp": timestamp_ms,
             "observedAt": datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc).isoformat(),
-            "schemaVersion": 1,
+            "evidence": evidence,
+            "confidence": confidence,
+            "relation": relation,
+            "location": {"regionId": region_id, "x": x, "y": y, "plane": plane},
+            "schemaVersion": 2,
         }
         _save_telemetry_event(row)
         accepted_events.append(row)
@@ -915,40 +1129,10 @@ def get_my_player_metrics(headers: dict[str, str] | None) -> dict[str, Any]:
         return authorized
     session = authorized["session"]
     events = _player_telemetry(str(session.get("playerHash") or session["installHash"]), str(session["installHash"]))
-    metrics = {
-        "fightsObserved": len({str(row.get("fightId")) for row in events if row.get("fightId")}),
-        "observedKills": 0,
-        "deaths": 0,
-        "returns": 0,
-        "opponentDamage": 0,
-        "friendlyFireDamage": 0,
-        "damageInflicted": 0,
-        "damageReceived": 0,
-        "thirdPartyDamage": 0,
-        "activitySamples": 0,
-        "eventsTracked": len(events),
-    }
+    metrics = _empty_metrics()
+    metrics["fightsObserved"] = len({str(row.get("fightId")) for row in events if row.get("fightId")})
     for row in events:
-        event_type = str(row.get("type") or "")
-        amount = max(0, int(row.get("amount") or 0))
-        if event_type == "kill_candidate":
-            metrics["observedKills"] += max(1, amount)
-        elif event_type == "death":
-            metrics["deaths"] += max(1, amount)
-        elif event_type == "return":
-            metrics["returns"] += max(1, amount)
-        elif event_type == "damage_dealt":
-            metrics["opponentDamage"] += amount
-            metrics["damageInflicted"] += amount
-        elif event_type == "friendly_fire_damage":
-            metrics["friendlyFireDamage"] += amount
-            metrics["damageInflicted"] += amount
-        elif event_type == "damage_taken":
-            metrics["damageReceived"] += amount
-        elif event_type == "third_party_damage":
-            metrics["thirdPartyDamage"] += amount
-        elif event_type in {"heartbeat", "location_sample"}:
-            metrics["activitySamples"] += 1
+        _accumulate_metric(metrics, row)
     return {
         "ok": True,
         "clanId": session["clanId"],
@@ -956,6 +1140,7 @@ def get_my_player_metrics(headers: dict[str, str] | None) -> dict[str, Any]:
         "source": "persisted confirmed-fight telemetry",
         "generatedAt": utc_now_iso(),
         "metrics": metrics,
+        "events": sorted((_public_event(row) for row in events), key=lambda row: (row["timestamp"], row["tick"]), reverse=True)[:500],
     }
 
 
