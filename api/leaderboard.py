@@ -8,7 +8,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 WIKI_API_URL = "https://oldschool.runescape.wiki/api.php"
@@ -101,6 +101,7 @@ PLUGIN_CLANS: list[dict[str, Any]] = []
 INSTALL_SESSIONS: dict[str, dict[str, Any]] = {}
 AVAILABILITY: list[dict[str, Any]] = []
 CHALLENGES: list[dict[str, Any]] = []
+TELEMETRY_EVENTS: list[dict[str, Any]] = []
 SESSION_SECONDS = 3600
 WRITE_CLOCK_SKEW_SECONDS = 300
 WRITE_RATE_LIMIT = 30
@@ -292,6 +293,48 @@ def _load_challenge(challenge_id: str) -> dict[str, Any] | None:
     return rows[0]
 
 
+def _confirmed_fights_for_clan(clan_id: str) -> list[dict[str, Any]]:
+    container = cosmos_wars_container()
+    if container is None:
+        return [row for row in CHALLENGES if row.get("status") == "confirmed" and clan_id in {row.get("creatorClanId"), row.get("opponentClanId")}]
+    query = "SELECT * FROM c WHERE c.docType = 'challenge' AND c.status = 'confirmed' AND (c.creatorClanId = @clan OR c.opponentClanId = @clan)"
+    return list(container.query_items(query=query, parameters=[{"name": "@clan", "value": clan_id}], enable_cross_partition_query=True))
+
+
+def _fight_for_event(clan_id: str, world: int, timestamp_ms: int) -> dict[str, Any] | None:
+    try:
+        observed = datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        return None
+    for fight in _confirmed_fights_for_clan(clan_id):
+        terms_value = fight.get("terms")
+        terms: dict[str, Any] = terms_value if isinstance(terms_value, dict) else {}
+        try:
+            starts = datetime.fromisoformat(str(terms.get("startsAt") or "").replace("Z", "+00:00"))
+            ends = starts + timedelta(minutes=int(terms.get("durationMinutes") or 0))
+            fight_world = int(terms.get("world") or 0)
+        except (TypeError, ValueError):
+            continue
+        if fight_world == world and starts <= observed <= ends:
+            return fight
+    return None
+
+
+def _save_telemetry_event(row: dict[str, Any]) -> None:
+    if not any(item.get("id") == row.get("id") for item in TELEMETRY_EVENTS):
+        TELEMETRY_EVENTS.append(row)
+    _save_war_document(row)
+
+
+def _player_telemetry(player_hash: str, install_hash: str) -> list[dict[str, Any]]:
+    container = cosmos_wars_container()
+    if container is None:
+        return [row for row in TELEMETRY_EVENTS if row.get("playerHash") == player_hash or (not row.get("playerHash") and row.get("installHash") == install_hash)]
+    query = "SELECT * FROM c WHERE c.docType = 'telemetryEvent' AND (c.playerHash = @player OR (NOT IS_DEFINED(c.playerHash) AND c.installHash = @install))"
+    parameters = [{"name": "@player", "value": player_hash}, {"name": "@install", "value": install_hash}]
+    return list(container.query_items(query=query, parameters=parameters, enable_cross_partition_query=True))
+
+
 def _header(headers: dict[str, str] | None, name: str) -> str:
     for key, value in (headers or {}).items():
         if key.lower() == name.lower():
@@ -303,7 +346,7 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _issue_session(install_hash: str, clan_id: str, rank: int, now: int | None = None) -> dict[str, Any]:
+def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int, now: int | None = None) -> dict[str, Any]:
     issued_at = int(time.time() if now is None else now)
     token = secrets.token_urlsafe(32)
     capabilities = ["member:read", "telemetry:write"]
@@ -313,6 +356,7 @@ def _issue_session(install_hash: str, clan_id: str, rank: int, now: int | None =
         "id": _token_hash(token),
         "docType": "installationSession",
         "installHash": install_hash,
+        "playerHash": player_hash,
         "clanId": clan_id,
         "observedClanRank": rank,
         "capabilities": capabilities,
@@ -377,7 +421,7 @@ def rotate_installation_session(headers: dict[str, str] | None) -> dict[str, Any
     session = authorized["session"]
     session["revokedAtEpoch"] = int(time.time())
     _save_session(session)
-    issued = _issue_session(session["installHash"], session["clanId"], int(session.get("observedClanRank") or -1))
+    issued = _issue_session(session["installHash"], str(session.get("playerHash") or session["installHash"]), session["clanId"], int(session.get("observedClanRank") or -1))
     return {"ok": True, **issued}
 
 
@@ -503,6 +547,8 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
 
     clan_id = normalize_clan_id(clan_name)
     install_hash = hashlib.sha256(install_id.encode("utf-8")).hexdigest()
+    player_key = player_name.lower() if player_name else install_hash
+    player_hash = hashlib.sha256((clan_id + "\0" + player_key).encode("utf-8")).hexdigest()
     now = utc_now_iso()
     row = load_plugin_clan(clan_id)
     if row is None:
@@ -523,6 +569,7 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
         observed_rank = -1
     member_payload = {
         "installHash": install_hash,
+        "playerHash": player_hash,
         "displayName": player_name if public_stats and player_name else "Private member",
         "public": public_stats,
         "clanRank": observed_rank,
@@ -537,7 +584,7 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
     row["member_count"] = len(members)
     row["updatedAt"] = now
     save_plugin_clan(row)
-    session = _issue_session(install_hash, clan_id, observed_rank)
+    session = _issue_session(install_hash, player_hash, clan_id, observed_rank)
     return {
         "ok": True,
         "clanId": clan_id,
@@ -794,7 +841,9 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
     authorized = authorize_write(client_headers, "telemetry:write")
     if not authorized.get("ok"):
         return authorized
-    session_clan_id = str(authorized["session"]["clanId"])
+    session = authorized["session"]
+    session_clan_id = str(session["clanId"])
+    install_hash = str(session["installHash"])
     payload = payload or {}
     events = payload.get("events") if isinstance(payload, dict) else []
     if not isinstance(events, list):
@@ -805,23 +854,45 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
         if not isinstance(event, dict):
             continue
         event_type = str(event.get("type") or "")
-        if event_type not in {"heartbeat", "damage_dealt", "damage_taken", "death", "kill_candidate", "return", "location_sample", "third_party_damage"}:
+        if event_type not in {"heartbeat", "damage_dealt", "friendly_fire_damage", "damage_taken", "death", "kill_candidate", "return", "location_sample", "third_party_damage"}:
             continue
         if normalize_clan_id(str(event.get("clanName") or "")) != session_clan_id:
             continue
-        accepted_events.append(
-            {
-                "type": event_type,
-                "playerPublic": bool(event.get("playerPublic", False)),
-                "publicPlayerName": event.get("playerName") if bool(event.get("playerPublic", False)) else None,
-                "clanName": event.get("clanName"),
-                "opponentName": event.get("opponentName"),
-                "amount": int(event.get("amount") or 0),
-                "world": int(event.get("world") or 0),
-                "tick": int(event.get("tick") or 0),
-                "timestamp": int(event.get("timestamp") or 0),
-            }
-        )
+        try:
+            amount = max(0, int(event.get("amount") or 0))
+            world = int(event.get("world") or 0)
+            tick = max(0, int(event.get("tick") or 0))
+            timestamp_ms = int(event.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            continue
+        fight = _fight_for_event(session_clan_id, world, timestamp_ms)
+        if fight is None:
+            continue
+        identity = "|".join([
+            install_hash, str(fight.get("id") or ""), event_type, str(timestamp_ms), str(tick),
+            str(world), str(amount), str(event.get("opponentName") or ""),
+        ])
+        row = {
+            "id": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+            "docType": "telemetryEvent",
+            "clanPairKey": fight["clanPairKey"],
+            "fightId": fight["id"],
+            "clanId": session_clan_id,
+            "installHash": install_hash,
+            "playerHash": str(session.get("playerHash") or install_hash),
+            "type": event_type,
+            "playerPublic": bool(event.get("playerPublic", False)),
+            "publicPlayerName": event.get("playerName") if bool(event.get("playerPublic", False)) else None,
+            "opponentName": str(event.get("opponentName") or "")[:12] or None,
+            "amount": amount,
+            "world": world,
+            "tick": tick,
+            "timestamp": timestamp_ms,
+            "observedAt": datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc).isoformat(),
+            "schemaVersion": 1,
+        }
+        _save_telemetry_event(row)
+        accepted_events.append(row)
     return {
         "ok": True,
         "accepted": len(accepted_events),
@@ -832,9 +903,59 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
             "playerWebsiteTrackingDefaultsPrivate": True,
             "recommendedClientFlushSeconds": 10,
             "recommendedMaxEventsPerBatch": 50,
-            "notes": "The server accepts batched telemetry so large wars do not generate one API request per visible player or per frame.",
+            "notes": "Only events matched to a confirmed fight world and scheduled window are stored.",
         },
-        "stored": "ephemeral-validation-only-until-cosmos-ingestion-is-enabled",
+        "stored": "cosmos" if storage_backend() == "cosmos" else "memory-local-only",
+    }
+
+
+def get_my_player_metrics(headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "member:read")
+    if not authorized.get("ok"):
+        return authorized
+    session = authorized["session"]
+    events = _player_telemetry(str(session.get("playerHash") or session["installHash"]), str(session["installHash"]))
+    metrics = {
+        "fightsObserved": len({str(row.get("fightId")) for row in events if row.get("fightId")}),
+        "observedKills": 0,
+        "deaths": 0,
+        "returns": 0,
+        "opponentDamage": 0,
+        "friendlyFireDamage": 0,
+        "damageInflicted": 0,
+        "damageReceived": 0,
+        "thirdPartyDamage": 0,
+        "activitySamples": 0,
+        "eventsTracked": len(events),
+    }
+    for row in events:
+        event_type = str(row.get("type") or "")
+        amount = max(0, int(row.get("amount") or 0))
+        if event_type == "kill_candidate":
+            metrics["observedKills"] += max(1, amount)
+        elif event_type == "death":
+            metrics["deaths"] += max(1, amount)
+        elif event_type == "return":
+            metrics["returns"] += max(1, amount)
+        elif event_type == "damage_dealt":
+            metrics["opponentDamage"] += amount
+            metrics["damageInflicted"] += amount
+        elif event_type == "friendly_fire_damage":
+            metrics["friendlyFireDamage"] += amount
+            metrics["damageInflicted"] += amount
+        elif event_type == "damage_taken":
+            metrics["damageReceived"] += amount
+        elif event_type == "third_party_damage":
+            metrics["thirdPartyDamage"] += amount
+        elif event_type in {"heartbeat", "location_sample"}:
+            metrics["activitySamples"] += 1
+    return {
+        "ok": True,
+        "clanId": session["clanId"],
+        "privacy": "authenticated installation owner only",
+        "source": "persisted confirmed-fight telemetry",
+        "generatedAt": utc_now_iso(),
+        "metrics": metrics,
     }
 
 

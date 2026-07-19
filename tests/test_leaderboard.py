@@ -1,6 +1,7 @@
 import sys
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,6 +30,7 @@ from leaderboard import (
     create_availability,
     create_challenge,
     get_challenges,
+    get_my_player_metrics,
     update_challenge,
     rotate_installation_session,
     search_clans,
@@ -65,6 +67,7 @@ class LeaderboardTests(unittest.TestCase):
         leaderboard.INSTALL_SESSIONS.clear()
         leaderboard.AVAILABILITY.clear()
         leaderboard.CHALLENGES.clear()
+        leaderboard.TELEMETRY_EVENTS.clear()
 
     def test_health(self):
         payload = health()
@@ -292,10 +295,58 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(submit_telemetry_batch(events, {})["error"], "missing_session")
         payload = submit_telemetry_batch(events, self.auth_headers(registered["sessionToken"]))
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["accepted"], 2)
+        self.assertEqual(payload["accepted"], 0)
+        self.assertEqual(payload["rejected"], 2)
         self.assertTrue(payload["policy"]["worldIsPublic"])
         self.assertTrue(payload["policy"]["playerWebsiteTrackingDefaultsPrivate"])
         self.assertEqual(payload["maxBatch"], 50)
+
+    def test_confirmed_war_telemetry_is_persisted_and_aggregated_for_authenticated_player(self):
+        registered = register_plugin({"installId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "playerName": "Oyama", "clanName": "TRAPISTAN", "clanRank": 1})
+        now_ms = int(time.time() * 1000)
+        starts_at = datetime.fromtimestamp((now_ms / 1000) - 60, timezone.utc).isoformat().replace("+00:00", "Z")
+        leaderboard.CHALLENGES.append({
+            "id": "fight-1", "docType": "challenge", "clanPairKey": "rivals|trapistan",
+            "creatorClanId": "trapistan", "opponentClanId": "rivals", "status": "confirmed",
+            "terms": {"world": 330, "startsAt": starts_at, "durationMinutes": 30},
+        })
+        events = {"events": [
+            {"type": "damage_dealt", "clanName": "TRAPISTAN", "amount": 31, "world": 330, "tick": 10, "timestamp": now_ms},
+            {"type": "friendly_fire_damage", "clanName": "TRAPISTAN", "amount": 4, "world": 330, "tick": 10, "timestamp": now_ms + 1},
+            {"type": "damage_taken", "clanName": "TRAPISTAN", "amount": 18, "world": 330, "tick": 11, "timestamp": now_ms + 2},
+            {"type": "kill_candidate", "clanName": "TRAPISTAN", "amount": 1, "world": 330, "tick": 12, "timestamp": now_ms + 2},
+            {"type": "death", "clanName": "TRAPISTAN", "amount": 1, "world": 330, "tick": 13, "timestamp": now_ms + 3},
+            {"type": "return", "clanName": "TRAPISTAN", "amount": 1, "world": 330, "tick": 14, "timestamp": now_ms + 4},
+            {"type": "heartbeat", "clanName": "TRAPISTAN", "amount": 0, "world": 330, "tick": 15, "timestamp": now_ms + 5},
+            {"type": "third_party_damage", "clanName": "TRAPISTAN", "amount": 7, "world": 330, "tick": 16, "timestamp": now_ms + 6},
+            {"type": "damage_dealt", "clanName": "TRAPISTAN", "amount": 99, "world": 330, "tick": 17, "timestamp": now_ms - 3600000},
+        ]}
+        stored = submit_telemetry_batch(events, self.auth_headers(registered["sessionToken"]))
+        self.assertEqual(stored["accepted"], 8)
+        self.assertEqual(stored["rejected"], 1)
+        self.assertEqual(stored["stored"], "cosmos" if leaderboard.storage_backend() == "cosmos" else "memory-local-only")
+        result = get_my_player_metrics(self.auth_headers(registered["sessionToken"]))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["metrics"]["fightsObserved"], 1)
+        self.assertEqual(result["metrics"]["observedKills"], 1)
+        self.assertEqual(result["metrics"]["deaths"], 1)
+        self.assertEqual(result["metrics"]["returns"], 1)
+        self.assertEqual(result["metrics"]["opponentDamage"], 31)
+        self.assertEqual(result["metrics"]["friendlyFireDamage"], 4)
+        self.assertEqual(result["metrics"]["damageInflicted"], 35)
+        self.assertEqual(result["metrics"]["damageReceived"], 18)
+        self.assertEqual(result["metrics"]["thirdPartyDamage"], 7)
+        self.assertEqual(result["metrics"]["activitySamples"], 1)
+        self.assertEqual(result["metrics"]["eventsTracked"], 8)
+
+        reinstalled = register_plugin({
+            "installId": "22222222-2222-4222-8222-222222222222",
+            "playerName": "  oyama  ",
+            "clanName": "TRAPISTAN",
+            "clanRank": 1,
+        })
+        reinstalled_metrics = get_my_player_metrics(self.auth_headers(reinstalled["sessionToken"]))
+        self.assertEqual(reinstalled_metrics["metrics"], result["metrics"])
 
 
 if __name__ == "__main__":

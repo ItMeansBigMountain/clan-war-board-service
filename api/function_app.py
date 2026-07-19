@@ -18,6 +18,7 @@ from leaderboard import (
     get_theme_assets,
     get_win_judging_system,
     get_challenges,
+    get_my_player_metrics,
     health,
     create_availability,
     create_challenge,
@@ -136,6 +137,10 @@ if func is not None:
     def plugin_challenge_action_route(req):
         challenge_id = req.route_params.get("challengeId", "")
         return write_response(update_challenge(challenge_id, request_json(req), dict(req.headers or {})))
+
+    @app.route(route="plugin/me/metrics", methods=["GET"])
+    def plugin_my_metrics_route(req):
+        return write_response(get_my_player_metrics(dict(req.headers or {})))
 
     @app.route(route="plugin/events/batch", methods=["POST"])
     def telemetry_batch_route(req):
