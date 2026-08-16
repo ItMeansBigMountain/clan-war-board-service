@@ -11,6 +11,7 @@ from leaderboard import (
     get_clans,
     get_competitive_leaderboard,
     get_fight_setup_schema,
+    get_fight_modes,
     get_leaderboard,
     get_past_battles,
     get_public_availability,
@@ -65,7 +66,11 @@ if func is not None:
 
     @app.route(route="leaderboard", methods=["GET"])
     def leaderboard_route(req):
-        return json_response(get_competitive_leaderboard())
+        return json_response(get_competitive_leaderboard((req.params or {}).get("mode", "cwa")))
+
+    @app.route(route="fight-modes", methods=["GET"])
+    def fight_modes_route(req):
+        return json_response(get_fight_modes())
 
     @app.route(route="challenge-system", methods=["GET"])
     def challenge_system_route(req):

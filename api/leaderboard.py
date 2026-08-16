@@ -18,6 +18,23 @@ _CACHE: dict[str, tuple[float, Any]] = {}
 
 OSRS_IMAGE_PAGES = ("Wilderness", "Clan Wars", "Revenant Caves")
 
+FIGHT_MODES = {
+    "cwa": {
+        "label": "Clan Wars Arena",
+        "shortLabel": "CWA",
+        "primary": True,
+        "returnsAllowed": False,
+        "rankingSignals": ["result", "damagePressure", "tankEfficiency", "offPrayerAccuracy", "binding", "pileParticipation", "survival"],
+    },
+    "wildy": {
+        "label": "Wilderness",
+        "shortLabel": "Wildy",
+        "primary": False,
+        "returnsAllowed": True,
+        "rankingSignals": ["result", "kills", "deaths", "returns", "durationControl", "damagePressure", "thirdPartyAdjustment"],
+    },
+}
+
 FIGHT_SETUP_FIELDS: list[dict[str, str]] = [
     {"name": "opponentClanId", "label": "Opponent clan", "required": "true", "privacy": "leader"},
     {"name": "location", "label": "Fight location", "required": "true", "privacy": "leader/member after acceptance"},
@@ -126,6 +143,9 @@ def normalize_fight_terms(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("startsAt must be ISO-8601") from exc
     if parsed.tzinfo is None or combat_min < 3 or combat_max > 126 or combat_min > combat_max or not 5 <= duration <= 180:
         raise ValueError("invalid time, combat range, or duration")
+    mode = str(payload.get("mode") or "cwa").strip().lower()
+    if mode not in FIGHT_MODES:
+        raise ValueError("mode must be cwa or wildy")
     rules = str(payload.get("rules") or "").strip()
     if len(rules) > 1000:
         raise ValueError("rules are too long")
@@ -136,6 +156,8 @@ def normalize_fight_terms(payload: dict[str, Any]) -> dict[str, Any]:
         "combatMin": combat_min,
         "combatMax": combat_max,
         "durationMinutes": duration,
+        "mode": mode,
+        "returnsAllowed": mode == "wildy" and bool(payload.get("returnsAllowed", True)),
         "rules": rules,
     }
 
@@ -564,6 +586,9 @@ def create_availability(payload: dict[str, Any] | None, headers: dict[str, str] 
         return {"ok": False, "error": "invalid_availability"}
     if starts_at.tzinfo is None or not 5 <= duration <= 180 or combat_min < 3 or combat_max > 126 or combat_min > combat_max:
         return {"ok": False, "error": "invalid_availability"}
+    mode = str(payload.get("mode") or "cwa").strip().lower()
+    if mode not in FIGHT_MODES:
+        return {"ok": False, "error": "invalid_availability"}
     session = authorized["session"]
     row = {
         "id": str(uuid.uuid4()),
@@ -574,6 +599,7 @@ def create_availability(payload: dict[str, Any] | None, headers: dict[str, str] 
         "durationMinutes": duration,
         "combatMin": combat_min,
         "combatMax": combat_max,
+        "mode": mode,
         "notes": str(payload.get("notes") or "").strip()[:240],
         "createdAt": utc_now_iso(),
         "status": "open",
@@ -756,6 +782,20 @@ def plugin_clan_profile(row: dict[str, Any], rank: int | None = None) -> dict[st
             "damageDealt": int(row.get("damageDealt") or 0),
             "damageTaken": int(row.get("damageTaken") or 0),
         },
+        "rankings": {
+            "cwa": {
+                "rank": row.get("cwaRank"),
+                "rating": row.get("cwaRating"),
+                "record": row.get("cwaRecord") or {"wins": 0, "losses": 0, "draws": 0, "disputed": 0},
+                "status": "ranked" if row.get("cwaRating") is not None else "unrated",
+            },
+            "wildy": {
+                "rank": row.get("wildyRank"),
+                "rating": row.get("wildyRating"),
+                "record": row.get("wildyRecord") or {"wins": 0, "losses": 0, "draws": 0, "disputed": 0},
+                "status": "ranked" if row.get("wildyRating") is not None else "unrated",
+            },
+        },
     }
     if rank is not None:
         payload["rank"] = rank
@@ -829,6 +869,7 @@ def get_public_availability() -> dict[str, Any]:
             "durationMinutes": row.get("durationMinutes"),
             "combatMin": row.get("combatMin"),
             "combatMax": row.get("combatMax"),
+            "mode": row.get("mode") or "cwa",
             "notes": row.get("notes"),
             "status": row.get("status"),
         }
@@ -853,6 +894,7 @@ def get_public_availability() -> dict[str, Any]:
             "durationMinutes": terms.get("durationMinutes"),
             "combatMin": terms.get("combatMin"),
             "combatMax": terms.get("combatMax"),
+            "mode": terms.get("mode") or "cwa",
             "status": row.get("status"),
         }
 
@@ -961,6 +1003,18 @@ def get_fight_setup_schema() -> dict[str, Any]:
         "generatedAt": utc_now_iso(),
         "requiredFields": FIGHT_SETUP_FIELDS,
         "agreementModel": "Both leaders must accept the exact terms hash. Changes require reconfirmation.",
+        "defaultMode": "cwa",
+        "modes": FIGHT_MODES,
+    }
+
+
+def get_fight_modes() -> dict[str, Any]:
+    return {
+        "generatedAt": utc_now_iso(),
+        "defaultMode": "cwa",
+        "modes": FIGHT_MODES,
+        "membershipValidation": "Roster claims are checked against both clans' registered plugin members; outsiders remain in analysis as non-clan participants.",
+        "replay": "Post-fight replay is an event/location timeline reconstructed from corroborated client observations, not a video recording.",
     }
 
 
@@ -998,6 +1052,18 @@ def get_win_judging_system() -> dict[str, Any]:
             "fight ending early by mutual agreement can publish a no-contest or agreed winner",
         ],
         "publicLeaderboardPolicy": "Only completed, non-disputed fights with enough confidence should affect leaderboard rating.",
+        "modeSystems": {
+            "cwa": {
+                "returnsAllowed": False,
+                "signals": ["result", "damagePressure", "tankEfficiency", "pileParticipation", "transitionSpeed", "binding", "survival"],
+                "note": "No-return scoring; a death removes the player from the survivor curve.",
+            },
+            "wildy": {
+                "returnsAllowed": True,
+                "signals": ["result", "kills", "deaths", "returns", "durationControl", "damagePressure", "thirdPartyAdjustment"],
+                "note": "Return and location-control scoring applies only to accepted Wildy terms.",
+            },
+        },
     }
 
 def get_challenge_system() -> dict[str, Any]:
@@ -1013,7 +1079,10 @@ def get_challenge_system() -> dict[str, Any]:
         "privateUntilAccepted": ["world", "exact rally location", "leader notes"],
     }
 
-def get_competitive_leaderboard() -> dict[str, Any]:
+def get_competitive_leaderboard(mode: str = "cwa") -> dict[str, Any]:
+    mode = mode.lower().strip()
+    if mode not in FIGHT_MODES:
+        mode = "cwa"
     base = get_leaderboard()
     standings = []
     for index, clan in enumerate(base.get("standings", []), start=1):
@@ -1023,13 +1092,16 @@ def get_competitive_leaderboard() -> dict[str, Any]:
             "clan_name": clan.get("clan_name"),
             "clan_type": clan.get("clan_type"),
             "member_count": clan.get("member_count"),
-            "rating": None,
-            "record": {"wins": 0, "losses": 0, "draws": 0, "disputed": 0},
-            "ratingStatus": "unrated_until_completed_clan_war_board_fights",
+            "rating": (clan.get("rankings") or {}).get(mode, {}).get("rating"),
+            "record": (clan.get("rankings") or {}).get(mode, {}).get("record") or {"wins": 0, "losses": 0, "draws": 0, "disputed": 0},
+            "ratingStatus": (clan.get("rankings") or {}).get(mode, {}).get("status") or "unrated",
         })
     return {
         "generatedAt": utc_now_iso(),
         "source": "Clan War Board plugin completed fight results",
+        "mode": mode,
+        "modeLabel": FIGHT_MODES[mode]["label"],
+        "availableModes": list(FIGHT_MODES),
         "leaderboardPolicy": get_win_judging_system()["publicLeaderboardPolicy"],
         "standings": standings,
     }
@@ -1051,7 +1123,7 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
         if not isinstance(event, dict):
             continue
         event_type = str(event.get("type") or "")
-        if event_type not in {"heartbeat", "damage_dealt", "friendly_fire_damage", "damage_taken", "death", "kill_candidate", "return", "location_sample", "third_party_damage"}:
+        if event_type not in {"heartbeat", "damage_dealt", "friendly_fire_damage", "damage_taken", "death", "kill_candidate", "return", "location_sample", "third_party_damage", "attack_style", "off_prayer_hit", "bind_cast", "bind_landed", "pile_target", "prayer_switch", "gear_switch", "food_eaten"}:
             continue
         if normalize_clan_id(str(event.get("clanName") or "")) != session_clan_id:
             continue

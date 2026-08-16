@@ -14,6 +14,7 @@ from leaderboard import (
     get_clans,
     get_competitive_leaderboard,
     get_fight_setup_schema,
+    get_fight_modes,
     get_leaderboard,
     get_past_battles,
     get_public_availability,
@@ -234,6 +235,25 @@ class LeaderboardTests(unittest.TestCase):
         payload = get_fight_setup_schema()
         names = {row["name"] for row in payload["requiredFields"]}
         self.assertTrue({"location", "world", "scheduledTime", "combatLevelRange", "durationMinutes"}.issubset(names))
+
+    def test_cwa_is_primary_and_profiles_keep_dual_ranks(self):
+        schema = get_fight_setup_schema()
+        self.assertEqual(schema["defaultMode"], "cwa")
+        self.assertFalse(schema["modes"]["cwa"]["returnsAllowed"])
+        self.assertTrue(schema["modes"]["wildy"]["returnsAllowed"])
+        modes = get_fight_modes()
+        self.assertIn("outsiders", modes["membershipValidation"])
+        profile = plugin_clan_profile(PLUGIN_CLAN)
+        self.assertEqual(set(profile["rankings"]), {"cwa", "wildy"})
+
+    def test_fight_terms_lock_mode_and_return_policy(self):
+        base = {"location": "Clan Wars Arena", "world": 330, "startsAt": "2026-08-20T20:00:00Z", "combatMin": 70, "combatMax": 126, "durationMinutes": 30, "rules": "Matched opts"}
+        cwa = normalize_fight_terms({**base, "mode": "cwa", "returnsAllowed": True})
+        wildy = normalize_fight_terms({**base, "mode": "wildy", "returnsAllowed": True})
+        self.assertFalse(cwa["returnsAllowed"])
+        self.assertTrue(wildy["returnsAllowed"])
+        self.assertNotEqual(terms_hash(cwa), terms_hash(wildy))
+        self.assertEqual(get_competitive_leaderboard("bad")["mode"], "cwa")
 
     def test_judging_system_defines_winner_signals(self):
         system = get_win_judging_system()

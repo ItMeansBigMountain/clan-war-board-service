@@ -1,6 +1,6 @@
 # Clan War Board Service
 
-Backend API and static leaderboard service for the Clan War Board RuneLite plugin.
+Backend API and static leaderboard service for the Clan War Board RuneLite plugin. CWA is the default/primary format; Wildy is a separate secondary format with independent rankings.
 
 This project is intentionally separate from the Plugin Hub-facing RuneLite plugin. The plugin stays in `projects/osrs-plugins/in-progress/ClanWarBoard`, while this service owns its own app code, docs, and Azure infrastructure.
 
@@ -32,7 +32,8 @@ Azure Functions expose these routes beneath `/api`. Function-level Azure auth is
 | Method and route | Purpose |
 | --- | --- |
 | `GET /api/health` | Service/storage health and production-readiness metadata. |
-| `GET /api/leaderboard` | Standings for plugin-registered clans. |
+| `GET /api/leaderboard?mode=cwa|wildy` | Separate CWA or Wildy standings for plugin-registered clans. |
+| `GET /api/fight-modes` | Mode rules, ranking signals, roster validation and replay contract. |
 | `GET /api/challenge-system`, `GET /api/judging-system`, `GET /api/fight-setup/schema` | Public workflow, judging, and fight-term schemas. |
 | `GET /api/clans[?q={query}]`, `GET /api/clans/{clanId}` | Registered-clan search and privacy-filtered profiles. |
 | `GET /api/public/availability`, `GET /api/public/battles` | Open/scheduled availability and completed battles. |
@@ -73,7 +74,9 @@ The target product is a RuneLite-first clan competition network:
 - other leaders apply/accept,
 - confirmed fight terms are locked by both leaders,
 - plugin clients submit batched fight observations,
-- service aggregates kills/deaths/returns/damage/third-party interference,
+- service aggregates CWA damage/tanking/pile/bind/survival signals and Wildy kills/deaths/returns/location control,
+- roster snapshots classify accepted-clan members and preserve outsiders in post-fight analysis,
+- website profiles expose separate CWA and Wildy ratings/history and a post-fight event/location replay,
 - plugin shows compact overview metrics,
 - website shows detailed completed-fight analytics.
 

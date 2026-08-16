@@ -90,6 +90,8 @@
       tbody tr:nth-child(even) { background:rgba(188,167,130,.45); }
       .mono { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-size:12px; }
       .compact-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+      .mode-switch { display:flex; gap:8px; margin:14px 0; }
+      .mode-switch button.active { outline:3px solid var(--gold); }
       footer { color: #f8ead0; text-shadow: 0 2px #18140c; padding: 34px 0 60px; }
       @media (max-width: 900px) { .hero, .grid { grid-template-columns: 1fr; } .stats, .setup-grid { grid-template-columns: repeat(2,1fr); } header { flex-direction: column; align-items: flex-start; } }
       @media (max-width: 560px) { .stats, .setup-grid, .search { grid-template-columns: 1fr; } }
@@ -112,9 +114,9 @@
         <section class="page" data-page="/">
           <div class="hero">
             <div class="panel hero-copy">
-              <div class="eyebrow">Old School RuneScape clan competition</div>
-              <h1>Challenge clans. Agree the terms. Settle it in the Wilderness.</h1>
-              <p>Clan War Board is a competitive home for clans actually using the RuneLite plugin: challenge active opponents, lock fight terms, track members in war, and publish real fight history.</p>
+              <div class="eyebrow">CWA first · Wilderness second</div>
+              <h1>Set the fight. Prove the performance. Build the clan scene.</h1>
+              <p>Clan leaders arrange CWA and Wilderness fights, lock identical terms, validate rosters, rank both formats separately, and publish evidence-backed fight history.</p>
               <div class="stats">
                 <div class="stat"><b id="stat-clans">0</b><span>registered plugin clans</span></div>
                 <div class="stat"><b id="stat-members">0</b><span>tracked members</span></div>
@@ -147,7 +149,8 @@
         </section>
 
         <section class="page" data-page="/leaderboard">
-          <div class="page-head"><div class="eyebrow">Competitive table</div><h2>Leaderboard built from plugin-confirmed wars.</h2><p>Only clans that use Clan War Board appear here. Ratings stay unrated until completed plugin-tracked fights have enough confidence to count.</p></div>
+          <div class="page-head"><div class="eyebrow">Competitive table</div><h2>Separate CWA and Wildy ranks.</h2><p>CWA emphasizes no-return results, damage pressure, tanking, binds, off-prayer accuracy and pile work. Wildy additionally rewards returns and location control.</p></div>
+          <div class="mode-switch"><button class="btn active" data-rank-mode="cwa">CWA rank</button><button class="btn" data-rank-mode="wildy">Wildy rank</button></div>
           <div class="grid" id="leaderboard-grid"></div>
           <div class="page-head" style="margin-top:26px"><div class="eyebrow">Winner system</div><h2>How Clan War Board decides who won.</h2><p>The winner system weighs kills, deaths, returns, location control, pressure, and third-party interference against the terms both leaders accepted.</p></div>
           <div class="grid" id="judging-grid"></div>
@@ -178,6 +181,7 @@
       const $ = (id) => document.getElementById(id);
       const fmt = new Intl.NumberFormat();
       let latestClans = [];
+      let rankMode = 'cwa';
       const pill = (text, cls='') => `<span class="pill ${cls}">${esc(text)}</span>`;
       const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       async function getJson(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); }
@@ -223,6 +227,14 @@
       function dimensionCard(title, values) {
         return `<div class="card panel"><h3>${esc(title)}</h3><div>${Object.entries(values || {}).sort((a,b)=>b[1]-a[1]).map(([key,value]) => pill(`${metricLabel(key)}: ${fmt.format(value)}`, key === 'high' ? 'green' : '')).join('') || pill('No observations')}</div></div>`;
       }
+      function renderLeaderboard(leaderboard) {
+        $('leaderboard-grid').innerHTML = leaderboard.standings.length ? leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(leaderboard.modeLabel || rankMode.toUpperCase(), 'gold')}${pill((c.ratingStatus || 'unrated').replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('') : emptyCard(`No ranked ${rankMode.toUpperCase()} clans yet`, 'Rankings unlock after completed, non-disputed plugin fights with sufficient roster and telemetry confidence.');
+      }
+      async function changeRankMode(mode) {
+        rankMode = mode;
+        document.querySelectorAll('[data-rank-mode]').forEach(b => b.classList.toggle('active', b.dataset.rankMode === mode));
+        renderLeaderboard(await getJson(`/api/leaderboard?mode=${mode}`));
+      }
       async function loadFightAnalytics(fightId) {
         if (!fightId) return;
         const data = await getJson(`/api/public/fights/${encodeURIComponent(fightId)}/summary`);
@@ -252,7 +264,7 @@
         $('battle-list').innerHTML = battles.battles?.length ? battles.battles.map(b => `<div class="card panel"><h3>${esc(b.creatorClanId || 'Unknown')} vs ${esc(b.opponentClanId || 'Unknown')}</h3><div>${pill(`W${b.world || '?'}`)}${pill(`${fmt.format(b.eventCount || 0)} events`, 'gold')}${pill(`${fmt.format(b.totals?.damageInflicted || 0)} damage`, 'red')}</div><p>${esc(b.startsAt || 'Time unavailable')} · ${fmt.format(b.durationMinutes || 0)} minutes · ${esc(b.location || 'Location unavailable')}</p><a class="btn" style="display:inline-flex" href="/results?fight=${encodeURIComponent(b.fightId)}">View verbose analytics</a></div>`).join('') : emptyCard('No published results yet', 'Completed battle records will appear here after both sides have fought and the result is ready to publish.');
         $('home-setup-grid').innerHTML = schema.requiredFields.map(f => `<div class="stat"><b>${f.label}</b><span>${f.privacy}</span></div>`).join('');
         $('challenge-grid').innerHTML = challenge.leaderActions.map(a => `<div class="card panel"><h3>${a.name}</h3><p>${a.description}</p></div>`).join('');
-        $('leaderboard-grid').innerHTML = leaderboard.standings.length ? leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(c.clan_type || 'Plugin Clan', 'gold')}${pill(c.ratingStatus.replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('') : emptyCard('No ranked clans yet', 'Leaderboard entries unlock after plugin clans complete verified fights.');
+        renderLeaderboard(leaderboard);
         $('judging-grid').innerHTML = judging.winnerSignals.map(s => `<div class="card panel"><h3>${s.name}</h3><div>${pill(`${s.weight} weight`, s.weight < 0 ? 'red' : 'green')}</div><p>${s.description}</p></div>`).join('');
         if (route() === '/results') await loadFightAnalytics(new URLSearchParams(location.search).get('fight'));
       }
@@ -267,6 +279,7 @@
       window.addEventListener('popstate', showPage);
       $('search-button').addEventListener('click', searchClans);
       $('clan-search').addEventListener('keydown', e => { if (e.key === 'Enter') searchClans(); });
+      document.querySelectorAll('[data-rank-mode]').forEach(b => b.addEventListener('click', () => changeRankMode(b.dataset.rankMode).catch(console.error)));
       load().catch(e => { console.error(e); $('clan-grid').innerHTML = emptyCard('The war board could not load', 'Please refresh and try again.'); });
     </script>
   </body>
