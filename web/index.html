@@ -92,6 +92,10 @@
       .compact-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
       .mode-switch { display:flex; gap:8px; margin:14px 0; }
       .mode-switch button.active { outline:3px solid var(--gold); }
+      .replay-shell { background:#17140f; border:3px solid var(--body-border); padding:12px; color:#f7ead0; }
+      #fight-replay { width:100%; height:420px; display:block; background:#151912; border:2px solid #7a6646; }
+      .replay-controls { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center; margin-top:10px; }
+      .replay-controls input { width:100%; padding:0; }
       footer { color: #f8ead0; text-shadow: 0 2px #18140c; padding: 34px 0 60px; }
       @media (max-width: 900px) { .hero, .grid { grid-template-columns: 1fr; } .stats, .setup-grid { grid-template-columns: repeat(2,1fr); } header { flex-direction: column; align-items: flex-start; } }
       @media (max-width: 560px) { .stats, .setup-grid, .search { grid-template-columns: 1fr; } }
@@ -161,6 +165,8 @@
           <div id="battle-list"></div>
           <div id="fight-analytics" class="analytics hidden">
             <div class="page-head"><div class="eyebrow">Verbose fight analytics</div><h2 id="analytics-title">Fight details</h2><p id="analytics-terms"></p></div>
+            <div class="page-head"><h2>Fight replay</h2><p>Scrub the reconstructed post-fight map. It shows only plugin observations; missing coverage remains unknown.</p></div>
+            <div class="replay-shell panel"><canvas id="fight-replay" width="1000" height="420"></canvas><div class="replay-controls"><button class="btn" id="replay-play">Play</button><input id="replay-scrubber" type="range" min="0" max="0" value="0" /><span id="replay-clock" class="mono">No events</span></div><div id="replay-legend"></div></div>
             <div id="analytics-totals" class="compact-grid"></div>
             <div class="grid" id="analytics-dimensions"></div>
             <div class="page-head"><h2>Clan totals</h2></div><div id="analytics-clans" class="grid"></div>
@@ -182,6 +188,7 @@
       const fmt = new Intl.NumberFormat();
       let latestClans = [];
       let rankMode = 'cwa';
+      let replayFrames = [], replayIndex = 0, replayTimer = null;
       const pill = (text, cls='') => `<span class="pill ${cls}">${esc(text)}</span>`;
       const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       async function getJson(path) { const r = await fetch(path); if (!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); }
@@ -235,6 +242,20 @@
         document.querySelectorAll('[data-rank-mode]').forEach(b => b.classList.toggle('active', b.dataset.rankMode === mode));
         renderLeaderboard(await getJson(`/api/leaderboard?mode=${mode}`));
       }
+      function stopReplay() { if (replayTimer) clearInterval(replayTimer); replayTimer = null; $('replay-play').textContent = 'Play'; }
+      function replayColor(clanId, clans) { return ['#53a7ff','#ef5a4f','#ffd35a','#a9e06e'][Math.max(0,clans.indexOf(clanId))%4]; }
+      function drawReplay(index) {
+        replayIndex=Math.max(0,Math.min(index,replayFrames.length-1)); const canvas=$('fight-replay'),ctx=canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#151912';ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.strokeStyle='rgba(255,255,255,.07)'; for(let x=0;x<canvas.width;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke()} for(let y=0;y<canvas.height;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke()}
+        if(!replayFrames.length){ctx.fillStyle='#f7ead0';ctx.font='24px Georgia';ctx.textAlign='center';ctx.fillText('No replay observations were captured',canvas.width/2,canvas.height/2);$('replay-clock').textContent='No events';return}
+        const upto=replayFrames.slice(0,replayIndex+1),points=upto.filter(e=>e.location&&e.location.x&&e.location.y),clans=[...new Set(points.map(e=>e.clanId||'unknown'))];
+        if(!points.length){ctx.fillStyle='#f7ead0';ctx.textAlign='center';ctx.fillText('Events exist, but no map positions were captured',canvas.width/2,canvas.height/2);return}
+        const xs=points.map(e=>e.location.x),ys=points.map(e=>e.location.y),minX=Math.min(...xs)-2,maxX=Math.max(...xs)+2,minY=Math.min(...ys)-2,maxY=Math.max(...ys)+2,sx=x=>40+(x-minX)/Math.max(1,maxX-minX)*(canvas.width-80),sy=y=>canvas.height-40-(y-minY)/Math.max(1,maxY-minY)*(canvas.height-80),latest=new Map(); points.forEach(e=>latest.set(e.player,e));
+        points.slice(-120).forEach(e=>{ctx.globalAlpha=.16;ctx.fillStyle=replayColor(e.clanId,clans);ctx.beginPath();ctx.arc(sx(e.location.x),sy(e.location.y),3,0,Math.PI*2);ctx.fill()});ctx.globalAlpha=1;
+        latest.forEach(e=>{const x=sx(e.location.x),y=sy(e.location.y);ctx.fillStyle=replayColor(e.clanId,clans);ctx.beginPath();ctx.arc(x,y,e.type==='death'?9:7,0,Math.PI*2);ctx.fill();ctx.strokeStyle=e.type==='death'?'#fff':'#111';ctx.stroke();ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText(e.player||'Private',x,y-12);if(e.amount){ctx.fillStyle='#ffcf6e';ctx.fillText(`${e.type.replaceAll('_',' ')} ${e.amount}`,x,y+20)}});
+        const current=replayFrames[replayIndex];$('replay-clock').textContent=`${replayIndex+1}/${replayFrames.length} · tick ${current.tick||'?'} · ${current.type.replaceAll('_',' ')}`;$('replay-scrubber').value=replayIndex;$('replay-legend').innerHTML=clans.map(c=>pill(c)).join('')+pill('Trail = observed positions','gold');
+      }
+      function setupReplay(events){stopReplay();replayFrames=(events||[]).slice().sort((a,b)=>(a.timestamp-b.timestamp)||(a.tick-b.tick));replayIndex=0;$('replay-scrubber').max=Math.max(0,replayFrames.length-1);$('replay-scrubber').value=0;drawReplay(0)}
       async function loadFightAnalytics(fightId) {
         if (!fightId) return;
         const data = await getJson(`/api/public/fights/${encodeURIComponent(fightId)}/summary`);
@@ -252,6 +273,7 @@
           const l=e.location||{};
           return `<tr><td class="mono">${esc(e.observedAt || e.timestamp)}</td><td><b>${esc(e.clanId)}</b><br>${esc(e.player)}</td><td>${esc(metricLabel(e.type || 'unknown'))}</td><td>${esc(e.opponentName || '—')}</td><td>${fmt.format(e.amount || 0)}</td><td>${esc(metricLabel(e.evidence || 'unknown'))}</td><td>${pill(e.confidence || 'unknown', e.confidence === 'high' ? 'green' : '')}</td><td>${esc(metricLabel(e.relation || 'unknown'))}</td><td class="mono">W${fmt.format(e.world || 0)} R${fmt.format(l.regionId || 0)}<br>${fmt.format(l.x || 0)},${fmt.format(l.y || 0)},p${fmt.format(l.plane || 0)}</td></tr>`;
         }).join('');
+        setupReplay(analytics.events || []);
       }
       async function load() {
         showPage();
@@ -280,6 +302,8 @@
       $('search-button').addEventListener('click', searchClans);
       $('clan-search').addEventListener('keydown', e => { if (e.key === 'Enter') searchClans(); });
       document.querySelectorAll('[data-rank-mode]').forEach(b => b.addEventListener('click', () => changeRankMode(b.dataset.rankMode).catch(console.error)));
+      $('replay-scrubber').addEventListener('input', e => { stopReplay(); drawReplay(Number(e.target.value)); });
+      $('replay-play').addEventListener('click', () => { if(replayTimer){stopReplay();return} if(!replayFrames.length)return; $('replay-play').textContent='Pause'; replayTimer=setInterval(()=>{if(replayIndex>=replayFrames.length-1){stopReplay();return}drawReplay(replayIndex+1)},500); });
       load().catch(e => { console.error(e); $('clan-grid').innerHTML = emptyCard('The war board could not load', 'Please refresh and try again.'); });
     </script>
   </body>
