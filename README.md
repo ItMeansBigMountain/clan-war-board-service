@@ -33,6 +33,7 @@ Azure Functions expose these routes beneath `/api`. Function-level Azure auth is
 | --- | --- |
 | `GET /api/health` | Service/storage health and production-readiness metadata. |
 | `GET /api/leaderboard?mode=cwa|wildy` | Separate CWA or Wildy standings for plugin-registered clans. |
+| `GET /api/ratings/audit?mode=cwa|wildy` | Versioned rating inputs, algorithms, before/after values, and deltas for applied results. |
 | `GET /api/fight-modes` | Mode rules, ranking signals, roster validation and replay contract. |
 | `GET /api/challenge-system`, `GET /api/judging-system`, `GET /api/fight-setup/schema` | Public workflow, judging, and fight-term schemas. |
 | `GET /api/clans[?q={query}]`, `GET /api/clans/{clanId}` | Registered-clan search and privacy-filtered profiles. |
@@ -48,7 +49,7 @@ Azure Functions expose these routes beneath `/api`. Function-level Azure auth is
 | `POST /api/plugin/session/rotate` | `member:read`; revokes/replaces the session. |
 | `POST /api/plugin/availability` | `leader:write`; creates availability. |
 | `GET|POST /api/plugin/challenges` | Reads involved challenges (`member:read`) or creates one (`challenge:write`). |
-| `POST /api/plugin/challenges/{id}/actions` | `challenge:write`; accept/counter/reject/cancel. |
+| `POST /api/plugin/challenges/{id}/actions` | `challenge:write`; accept/counter/reject/cancel/complete. |
 | `GET /api/plugin/me/metrics` | `member:read`; owner-only aggregates/events. |
 | `POST /api/plugin/events/batch` | `telemetry:write`; validates/stores up to 50 fight events. |
 
@@ -56,7 +57,7 @@ Authenticated calls require `Authorization: Bearer …`, `X-CWB-Timestamp` withi
 
 Registration accepts installation UUID, player/clan names, observed rank, plugin version, and privacy preference. Availability/challenge routes validate dates, durations, combat ranges, world, location, rules, and participant authority. Telemetry validates event type, clan, confirmed-fight world/window, numeric/location fields, and evidence enums; deterministic IDs make retries idempotent.
 
-Public profiles show names only for opted-in members. Raw installation IDs and bearer tokens are not published. Live scheduled rows omit exact terms; completed summaries publish terms and detailed analysis. Owner metrics require the installation session.
+Public profiles show names only for opted-in members. Raw installation IDs and bearer tokens are not published. Live scheduled rows omit exact terms; completed summaries publish terms and detailed analysis. Owner metrics require the installation session. Ratings use a versioned Elo pipeline per mode and are applied only to mutually accepted completed fights that are non-disputed and meet immutable roster-snapshot and telemetry-confidence thresholds; each applied update stores the exact input, version, algorithm, before/after ratings, and deltas.
 
 ## Service outbound dependencies
 

@@ -119,10 +119,67 @@ INSTALL_SESSIONS: dict[str, dict[str, Any]] = {}
 AVAILABILITY: list[dict[str, Any]] = []
 CHALLENGES: list[dict[str, Any]] = []
 TELEMETRY_EVENTS: list[dict[str, Any]] = []
+RATING_AUDIT_RECORDS: list[dict[str, Any]] = []
 SESSION_SECONDS = 3600
 WRITE_CLOCK_SKEW_SECONDS = 300
 WRITE_RATE_LIMIT = 30
 LEADER_RANK_MINIMUM = 100
+RATING_SCHEMA_VERSION = "rating.v1"
+RATING_START = 1000
+RATING_K_FACTOR = 32
+RATING_MIN_ROSTER_MEMBERS = 2
+RATING_ACCEPTED_CONFIDENCE = {"high", "verified"}
+
+
+def _install_hash(install_id: str) -> str:
+    return hashlib.sha256(install_id.encode("utf-8")).hexdigest()
+
+
+def _player_hash(clan_id: str, player_name: str) -> str:
+    player_key = " ".join(str(player_name or "").strip().split()).lower()
+    return hashlib.sha256((normalize_clan_id(clan_id) + "\0" + player_key).encode("utf-8")).hexdigest()
+
+
+def _roster_snapshot(members: Any, clan_id: str) -> dict[str, Any]:
+    names = []
+    if isinstance(members, list):
+        for value in members[:500]:
+            name = str(value.get("displayName") or value.get("playerName") or value.get("name") or "") if isinstance(value, dict) else str(value or "")
+            normalized = " ".join(name.strip().split())[:12]
+            if normalized:
+                names.append(normalized)
+    hashes = sorted(set(_player_hash(clan_id, name) for name in names))
+    return {"schemaVersion": "roster.v1", "memberCount": len(hashes), "playerHashes": hashes, "capturedAt": utc_now_iso()}
+
+
+def grant_verified_leader(clan_name: str, install_id: str) -> None:
+    """Server-side/admin helper: mark an installation as authoritative for leader writes."""
+    clan_id = normalize_clan_id(clan_name)
+    row = load_plugin_clan(clan_id) or {"clan_id": clan_id, "clan_name": clan_name, "clan_type": "Unclassified", "members": []}
+    hashes = set(row.get("verifiedLeaderInstallHashes") or [])
+    hashes.add(_install_hash(install_id))
+    row["verifiedLeaderInstallHashes"] = sorted(hashes)
+    row["updatedAt"] = utc_now_iso()
+    save_plugin_clan(row)
+
+
+def _is_verified_leader(clan: dict[str, Any], install_hash: str) -> bool:
+    return install_hash in set(clan.get("verifiedLeaderInstallHashes") or [])
+
+
+def classify_participant(fight: dict[str, Any], reporting_clan_id: str, player_name: str) -> str:
+    reporting = normalize_clan_id(reporting_clan_id)
+    player_hash = _player_hash(reporting, player_name)
+    snapshots = fight.get("acceptedRosterSnapshots") if isinstance(fight.get("acceptedRosterSnapshots"), dict) else {}
+    own = snapshots.get(reporting) if isinstance(snapshots, dict) else None
+    if isinstance(own, dict) and player_hash in set(own.get("playerHashes") or []):
+        return "accepted_own_roster"
+    for clan_id, snapshot in snapshots.items() if isinstance(snapshots, dict) else []:
+        if clan_id == reporting or not isinstance(snapshot, dict):
+            continue
+        if _player_hash(str(clan_id), player_name) in set(snapshot.get("playerHashes") or []):
+            return "accepted_rival_roster"
+    return "outsider"
 
 
 def normalize_fight_terms(payload: dict[str, Any]) -> dict[str, Any]:
@@ -178,7 +235,7 @@ def apply_challenge_action(challenge: dict[str, Any], action: str, clan_id: str,
         result["status"] = "confirmed" if len(accepted) >= 2 else "proposed"
     elif action == "counter":
         normalized = normalize_fight_terms(new_terms or {})
-        result.update({"terms": normalized, "termsHash": terms_hash(normalized), "acceptedBy": [actor], "status": "reconfirm_required"})
+        result.update({"terms": normalized, "termsHash": terms_hash(normalized), "acceptedBy": [actor], "status": "reconfirm_required", "acceptedRosterSnapshots": {}})
     elif action in {"reject", "cancel"}:
         result["status"] = "rejected" if action == "reject" else "cancelled"
         result["acceptedBy"] = []
@@ -298,6 +355,164 @@ def _save_war_document(row: dict[str, Any]) -> None:
     container = cosmos_wars_container()
     if container is not None:
         container.upsert_item(dict(row))
+
+
+def _save_rating_audit(row: dict[str, Any]) -> None:
+    if not any(item.get("id") == row.get("id") for item in RATING_AUDIT_RECORDS):
+        RATING_AUDIT_RECORDS.append(row)
+    _save_war_document(row)
+
+
+def _rating_audit_for_fight(fight_id: str, mode: str) -> dict[str, Any] | None:
+    cached = next((row for row in RATING_AUDIT_RECORDS if row.get("fightId") == fight_id and row.get("mode") == mode), None)
+    if cached is not None:
+        return cached
+    container = cosmos_wars_container()
+    if container is None:
+        return None
+    query = "SELECT * FROM c WHERE c.docType = 'ratingAudit' AND c.fightId = @fight AND c.mode = @mode"
+    rows = list(container.query_items(
+        query=query,
+        parameters=[{"name": "@fight", "value": fight_id}, {"name": "@mode", "value": mode}],
+        enable_cross_partition_query=True,
+    ))
+    if not rows:
+        return None
+    RATING_AUDIT_RECORDS.append(rows[0])
+    return rows[0]
+
+
+def _rating_audits_for_mode(mode: str) -> list[dict[str, Any]]:
+    mode = mode if mode in FIGHT_MODES else "cwa"
+    container = cosmos_wars_container()
+    if container is None:
+        rows = [row for row in RATING_AUDIT_RECORDS if row.get("mode") == mode]
+    else:
+        rows = list(container.query_items(
+            query="SELECT * FROM c WHERE c.docType = 'ratingAudit' AND c.mode = @mode ORDER BY c.appliedAt DESC",
+            parameters=[{"name": "@mode", "value": mode}],
+            enable_cross_partition_query=True,
+        ))
+    return sorted(rows, key=lambda row: str(row.get("appliedAt") or ""), reverse=True)
+
+
+def _clean_audit_payload(value: Any) -> Any:
+    return json.loads(json.dumps(value, sort_keys=True, ensure_ascii=False))
+
+
+def _rating_record(row: dict[str, Any], mode: str) -> dict[str, int]:
+    record = row.get(f"{mode}Record")
+    if not isinstance(record, dict):
+        record = {}
+    return {
+        "wins": int(record.get("wins") or 0),
+        "losses": int(record.get("losses") or 0),
+        "draws": int(record.get("draws") or 0),
+        "disputed": int(record.get("disputed") or 0),
+    }
+
+
+def _rating_eligibility(fight: dict[str, Any], result: dict[str, Any], mode: str) -> tuple[bool, str]:
+    participants = {str(fight.get("creatorClanId") or ""), str(fight.get("opponentClanId") or "")}
+    accepted = {str(value) for value in fight.get("acceptedBy", [])}
+    if fight.get("status") != "completed":
+        return False, "fight_not_completed"
+    if not participants.issubset(accepted):
+        return False, "mutual_acceptance_required"
+    outcome = str(result.get("outcome") or "").strip().lower()
+    if bool(result.get("disputed")) or outcome in {"disputed", "no contest", "no_contest"}:
+        return False, "disputed_result"
+    confidence = str(result.get("telemetryConfidence") or "").strip().lower()
+    if confidence not in RATING_ACCEPTED_CONFIDENCE:
+        return False, "telemetry_confidence_threshold_not_met"
+    roster_value = fight.get("acceptedRosterSnapshots")
+    if not isinstance(roster_value, dict):
+        return False, "accepted_roster_snapshots_required"
+    for clan_id in participants:
+        snapshot = roster_value.get(clan_id)
+        if not isinstance(snapshot, dict):
+            return False, "accepted_roster_snapshots_required"
+        member_count = int(snapshot.get("memberCount") or 0)
+        if member_count < RATING_MIN_ROSTER_MEMBERS:
+            return False, "roster_snapshot_threshold_not_met"
+    if outcome == "draw":
+        return True, "rateable"
+    winner = normalize_clan_id(str(result.get("winnerClanId") or ""))
+    if outcome != "win" or winner not in participants:
+        return False, "valid_winner_required"
+    if mode not in FIGHT_MODES:
+        return False, "invalid_mode"
+    return True, "rateable"
+
+
+def _apply_rating_update(fight: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    terms = fight.get("terms") if isinstance(fight.get("terms"), dict) else {}
+    mode = str(terms.get("mode") or "cwa").strip().lower()
+    if mode not in FIGHT_MODES:
+        mode = "cwa"
+    fight_id = str(fight.get("id") or "")
+    existing = _rating_audit_for_fight(fight_id, mode)
+    if existing is not None:
+        return {"applied": False, "reason": "already_applied", "auditId": existing.get("id"), "schemaVersion": existing.get("schemaVersion")}
+    ok, reason = _rating_eligibility(fight, result, mode)
+    if not ok:
+        return {"applied": False, "reason": reason, "schemaVersion": RATING_SCHEMA_VERSION, "mode": mode}
+
+    creator_id = str(fight.get("creatorClanId") or "")
+    opponent_id = str(fight.get("opponentClanId") or "")
+    creator = load_plugin_clan(creator_id) or {"clan_id": creator_id, "clan_name": creator_id, "members": []}
+    opponent = load_plugin_clan(opponent_id) or {"clan_id": opponent_id, "clan_name": opponent_id, "members": []}
+    winner_id = normalize_clan_id(str(result.get("winnerClanId") or ""))
+    outcome = str(result.get("outcome") or "").strip().lower()
+    def stored_rating(row: dict[str, Any]) -> int:
+        value = row.get(f"{mode}Rating")
+        return int(value) if value is not None else RATING_START
+
+    before = {
+        creator_id: stored_rating(creator),
+        opponent_id: stored_rating(opponent),
+    }
+    expected_creator = 1 / (1 + 10 ** ((before[opponent_id] - before[creator_id]) / 400))
+    score_creator = 0.5 if outcome == "draw" else (1.0 if winner_id == creator_id else 0.0)
+    delta_creator = round(RATING_K_FACTOR * (score_creator - expected_creator))
+    deltas = {creator_id: delta_creator, opponent_id: -delta_creator}
+    after = {clan_id: before[clan_id] + deltas[clan_id] for clan_id in before}
+
+    for clan_id, row, score in ((creator_id, creator, score_creator), (opponent_id, opponent, 1.0 - score_creator)):
+        record = _rating_record(row, mode)
+        if outcome == "draw":
+            record["draws"] += 1
+        elif score == 1.0:
+            record["wins"] += 1
+        else:
+            record["losses"] += 1
+        row[f"{mode}Rating"] = after[clan_id]
+        row[f"{mode}Record"] = record
+        row[f"{mode}RatingUpdatedAt"] = utc_now_iso()
+        save_plugin_clan(row)
+
+    audit = {
+        "id": hashlib.sha256((RATING_SCHEMA_VERSION + "|" + fight_id + "|" + mode).encode("utf-8")).hexdigest(),
+        "docType": "ratingAudit",
+        "schemaVersion": RATING_SCHEMA_VERSION,
+        "fightId": fight_id,
+        "mode": mode,
+        "appliedAt": utc_now_iso(),
+        "input": _clean_audit_payload({
+            "fightId": fight_id,
+            "terms": terms,
+            "termsHash": fight.get("termsHash"),
+            "acceptedBy": fight.get("acceptedBy", []),
+            "acceptedRosterSnapshots": fight.get("acceptedRosterSnapshots", {}),
+            "result": result,
+        }),
+        "ratingsBefore": before,
+        "ratingsAfter": after,
+        "ratingDeltas": deltas,
+        "algorithm": {"name": "elo", "kFactor": RATING_K_FACTOR, "startRating": RATING_START},
+    }
+    _save_rating_audit(audit)
+    return {"applied": True, "auditId": audit["id"], "schemaVersion": RATING_SCHEMA_VERSION, "mode": mode, "ratingDeltas": deltas}
 
 
 def _load_challenge(challenge_id: str) -> dict[str, Any] | None:
@@ -420,11 +635,15 @@ def _public_event(row: dict[str, Any]) -> dict[str, Any]:
     opponent = str(row.get("opponentName") or "").strip()
     public_opponent = "Private opponent " + hashlib.sha256(opponent.lower().encode("utf-8")).hexdigest()[:8] if opponent else None
     relation = row.get("relation") or "unknown"
-    participant_classification = {
-        "self": "reporting_player",
-        "own_clan": "accepted_roster_or_own_clan",
-        "non_own_clan": "outsider_or_unverified",
-    }.get(relation, "unattributed")
+    participant_classification = {"self": "reporting_player", "own_clan": "accepted_roster_or_own_clan"}.get(relation, "unattributed")
+    if relation in {"own_clan", "non_own_clan"} and opponent:
+        fight = _load_challenge(str(row.get("fightId") or ""))
+        if fight is not None and fight.get("acceptedRosterSnapshots"):
+            participant_classification = classify_participant(fight, str(row.get("clanId") or ""), opponent)
+        elif relation == "non_own_clan":
+            participant_classification = "outsider_or_unverified"
+    elif relation == "non_own_clan":
+        participant_classification = "outsider_or_unverified"
     return {
         "id": row.get("id"),
         "fightId": row.get("fightId"),
@@ -503,11 +722,11 @@ def _token_hash(token: str) -> str:
 
 
 def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int,
-                   public_stats: bool = False, now: int | None = None) -> dict[str, Any]:
+                   public_stats: bool = False, now: int | None = None, verified_leader: bool = False) -> dict[str, Any]:
     issued_at = int(time.time() if now is None else now)
     token = secrets.token_urlsafe(32)
     capabilities = ["member:read", "telemetry:write"]
-    if rank >= LEADER_RANK_MINIMUM:
+    if verified_leader:
         capabilities.extend(["leader:write", "challenge:write"])
     session = {
         "id": _token_hash(token),
@@ -522,7 +741,7 @@ def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int,
         "expiresAtEpoch": issued_at + SESSION_SECONDS,
         "nonces": [],
         "requestTimes": [],
-        "trustLevel": "runelite_client_observed_rank",
+        "trustLevel": "server_verified_leader_claim" if verified_leader else "registered_member",
     }
     _save_session(session)
     return {
@@ -579,8 +798,10 @@ def rotate_installation_session(headers: dict[str, str] | None) -> dict[str, Any
     session = authorized["session"]
     session["revokedAtEpoch"] = int(time.time())
     _save_session(session)
+    clan = load_plugin_clan(str(session["clanId"])) or {}
     issued = _issue_session(session["installHash"], str(session.get("playerHash") or session["installHash"]), session["clanId"],
-                            int(session.get("observedClanRank") or -1), bool(session.get("publicStats", False)))
+                            int(session.get("observedClanRank") or -1), bool(session.get("publicStats", False)),
+                            verified_leader=_is_verified_leader(clan, str(session["installHash"])))
     return {"ok": True, **issued}
 
 
@@ -684,12 +905,34 @@ def update_challenge(challenge_id: str, payload: dict[str, Any] | None, headers:
         return {"ok": False, "error": "challenge_forbidden"}
     if action == "reject" and actor != challenge.get("opponentClanId"):
         return {"ok": False, "error": "challenge_forbidden"}
+    if action == "complete":
+        if challenge.get("status") != "confirmed":
+            return {"ok": False, "error": "challenge_not_confirmed"}
+        updated = json.loads(json.dumps(challenge))
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        updated["status"] = "completed"
+        updated["completedAt"] = utc_now_iso()
+        updated["result"] = _clean_audit_payload(result)
+        updated["updatedAt"] = utc_now_iso()
+        challenge.clear()
+        challenge.update(updated)
+        rating_update = _apply_rating_update(challenge, updated["result"])
+        challenge["ratingUpdate"] = rating_update
+        _save_war_document(challenge)
+        return {"ok": True, "challenge": challenge, "ratingUpdate": rating_update}
     try:
         updated = apply_challenge_action(challenge, action, actor, payload.get("terms"))
     except ValueError as exc:
         return {"ok": False, "error": "invalid_challenge_action", "message": str(exc)}
     challenge.clear()
     challenge.update(updated)
+    if challenge.get("status") == "confirmed":
+        snapshots = dict(challenge.get("acceptedRosterSnapshots") or {})
+        for clan_id in (str(challenge.get("creatorClanId") or ""), str(challenge.get("opponentClanId") or "")):
+            if clan_id and clan_id not in snapshots:
+                clan = load_plugin_clan(clan_id) or {}
+                snapshots[clan_id] = json.loads(json.dumps(clan.get("rosterSnapshot") or _roster_snapshot([], clan_id)))
+        challenge["acceptedRosterSnapshots"] = snapshots
     _save_war_document(challenge)
     return {"ok": True, "challenge": challenge}
 
@@ -709,9 +952,8 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
         return {"ok": False, "error": "clan_name_required"}
 
     clan_id = normalize_clan_id(clan_name)
-    install_hash = hashlib.sha256(install_id.encode("utf-8")).hexdigest()
-    player_key = player_name.lower() if player_name else install_hash
-    player_hash = hashlib.sha256((clan_id + "\0" + player_key).encode("utf-8")).hexdigest()
+    install_hash = _install_hash(install_id)
+    player_hash = _player_hash(clan_id, player_name) if player_name else hashlib.sha256((clan_id + "\0" + install_hash).encode("utf-8")).hexdigest()
     now = utc_now_iso()
     row = load_plugin_clan(clan_id)
     if row is None:
@@ -745,9 +987,12 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
         member.clear()
         member.update(member_payload)
     row["member_count"] = len(members)
+    roster_payload = payload.get("rosterMembers")
+    row["rosterSnapshot"] = _roster_snapshot(roster_payload if isinstance(roster_payload, list) else [player_name], clan_id)
     row["updatedAt"] = now
     save_plugin_clan(row)
-    session = _issue_session(install_hash, player_hash, clan_id, observed_rank, public_stats)
+    session = _issue_session(install_hash, player_hash, clan_id, observed_rank, public_stats,
+                             verified_leader=_is_verified_leader(row, install_hash))
     return {
         "ok": True,
         "clanId": clan_id,
@@ -1099,7 +1344,11 @@ def get_competitive_leaderboard(mode: str = "cwa") -> dict[str, Any]:
         mode = "cwa"
     base = get_leaderboard()
     standings = []
-    for index, clan in enumerate(base.get("standings", []), start=1):
+    clans = sorted(
+        base.get("standings", []),
+        key=lambda clan: (((clan.get("rankings") or {}).get(mode, {}).get("rating") is None), -int(((clan.get("rankings") or {}).get(mode, {}).get("rating") or 0)), str(clan.get("clan_name") or "")),
+    )
+    for index, clan in enumerate(clans, start=1):
         standings.append({
             "rank": index,
             "clan_id": clan.get("clan_id"),
@@ -1118,6 +1367,23 @@ def get_competitive_leaderboard(mode: str = "cwa") -> dict[str, Any]:
         "availableModes": list(FIGHT_MODES),
         "leaderboardPolicy": get_win_judging_system()["publicLeaderboardPolicy"],
         "standings": standings,
+    }
+
+
+def get_rating_audit_records(mode: str = "cwa") -> dict[str, Any]:
+    mode = mode.lower().strip()
+    if mode not in FIGHT_MODES:
+        mode = "cwa"
+    records = [
+        {key: value for key, value in row.items() if key not in {"_etag", "_rid", "_self", "_attachments", "_ts"}}
+        for row in _rating_audits_for_mode(mode)
+    ]
+    return {
+        "generatedAt": utc_now_iso(),
+        "source": "versioned Clan War Board rating audit records",
+        "mode": mode,
+        "schemaVersion": RATING_SCHEMA_VERSION,
+        "records": records,
     }
 
 def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[str, str] | None = None) -> dict[str, Any]:
