@@ -1387,19 +1387,18 @@ def get_past_battles() -> dict[str, Any]:
         fights = [row for row in candidates if _fight_is_completed(row)]
     battles = []
     for fight in fights:
-        analytics = _aggregate_fight_events(_fight_telemetry(str(fight.get("id") or "")))
         terms_value = fight.get("terms")
         terms: dict[str, Any] = terms_value if isinstance(terms_value, dict) else {}
+        result_value = fight.get("result")
+        result: dict[str, Any] = result_value if isinstance(result_value, dict) else {}
         battles.append({
             "fightId": fight.get("id"),
             "creatorClanId": fight.get("creatorClanId"),
             "opponentClanId": fight.get("opponentClanId"),
             "startsAt": terms.get("startsAt"),
-            "durationMinutes": terms.get("durationMinutes"),
-            "world": terms.get("world"),
-            "location": terms.get("location"),
-            "totals": analytics["totals"],
-            "eventCount": len(analytics["events"]),
+            "outcome": result.get("outcome"),
+            "winnerClanId": result.get("winnerClanId"),
+            "confirmedByBothClans": True,
         })
     battles.sort(key=lambda row: str(row.get("startsAt") or ""), reverse=True)
     return {
@@ -1417,18 +1416,18 @@ def get_public_fight_summary(fight_id: str) -> dict[str, Any] | None:
         return None
     terms_value = fight.get("terms")
     terms: dict[str, Any] = terms_value if isinstance(terms_value, dict) else {}
+    result_value = fight.get("result")
+    result: dict[str, Any] = result_value if isinstance(result_value, dict) else {}
     return {
         "generatedAt": utc_now_iso(),
-        "source": "persisted completed-fight telemetry",
-        "privacy": "opponent names are retained for verbose event analysis; opted-out participants use stable anonymous labels",
+        "source": "mutually confirmed clan result",
+        "privacy": "clan-level result only; no opponent, combat, player, or location observations are published",
         "fight": {
             "id": fight.get("id"),
             "creatorClanId": fight.get("creatorClanId"),
             "opponentClanId": fight.get("opponentClanId"),
             "status": "completed",
             "terms": {
-                "world": terms.get("world"),
-                "location": terms.get("location"),
                 "startsAt": terms.get("startsAt"),
                 "durationMinutes": terms.get("durationMinutes"),
                 "combatMin": terms.get("combatMin"),
@@ -1437,8 +1436,12 @@ def get_public_fight_summary(fight_id: str) -> dict[str, Any] | None:
                 "returnsAllowed": (terms.get("mode") or "cwa") == "wildy" and bool(terms.get("returnsAllowed", True)),
                 "rules": terms.get("rules"),
             },
+            "result": {
+                "outcome": result.get("outcome"),
+                "winnerClanId": result.get("winnerClanId"),
+                "confirmedByBothClans": True,
+            },
         },
-        "analytics": _aggregate_fight_events(_fight_telemetry(fight_id)),
     }
 
 
@@ -1457,8 +1460,8 @@ def get_fight_modes() -> dict[str, Any]:
         "generatedAt": utc_now_iso(),
         "defaultMode": "cwa",
         "modes": FIGHT_MODES,
-        "membershipValidation": "Roster claims are checked against both clans' registered plugin members; outsiders remain in analysis as non-clan participants.",
-        "replay": "Post-fight replay is an event/location timeline reconstructed from corroborated client observations, not a video recording.",
+        "membershipValidation": "Each clan leader confirms participation and the final clan-level result; the production plugin does not upload rosters or observations about other players.",
+        "resultPublication": "A clan-level result is published only after both participating clans confirm the same outcome.",
     }
 
 
@@ -1466,8 +1469,8 @@ def get_fight_modes() -> dict[str, Any]:
 def get_win_judging_system() -> dict[str, Any]:
     return {
         "generatedAt": utc_now_iso(),
-        "system": "terms_locked_weighted_score",
-        "summary": "Clan War Board should determine winners from the accepted fight terms plus plugin telemetry collected during the scheduled window.",
+        "system": "mutual_result_confirmation",
+        "summary": "Clan War Board publishes a winner only when both participating clan leaders confirm the same result.",
         "requiredBeforeFight": [
             "both leaders accept the same terms hash",
             "scheduled start and end time are locked",
@@ -1475,12 +1478,8 @@ def get_win_judging_system() -> dict[str, Any]:
             "combat bracket and allowed return rules are locked",
         ],
         "winnerSignals": [
-            {"name": "kills", "weight": 35, "description": "confirmed kills by participating clan members during the agreed window"},
-            {"name": "deaths", "weight": -20, "description": "confirmed deaths by participating clan members during the agreed window"},
-            {"name": "returns", "weight": 15, "description": "members returning to the fight after death or bank trips when returns are allowed"},
-            {"name": "durationControl", "weight": 15, "description": "which clan maintained more active members near the agreed location over time"},
-            {"name": "damagePressure", "weight": 10, "description": "damage dealt versus taken among participating members"},
-            {"name": "thirdPartyAdjustment", "weight": 5, "description": "reduces confidence when outside clans or unaffiliated players heavily interfere"},
+            {"name": "matching leader confirmations", "weight": 1, "description": "both participating clans submit the same outcome and winner"},
+            {"name": "no active dispute", "weight": 1, "description": "a disputed result remains unpublished and does not affect ratings"},
         ],
         "outcomes": [
             "win",
@@ -1490,22 +1489,21 @@ def get_win_judging_system() -> dict[str, Any]:
             "no contest",
         ],
         "confidenceRules": [
-            "high confidence requires both clans to have enough plugin participants online",
-            "heavy third-party damage lowers confidence",
-            "missing leader confirmation can mark the result disputed",
-            "fight ending early by mutual agreement can publish a no-contest or agreed winner",
+            "both participating leaders must confirm an identical result",
+            "missing or conflicting confirmation prevents publication",
+            "a dispute pauses publication and rating changes pending moderation",
         ],
-        "publicLeaderboardPolicy": "Only completed, non-disputed fights with enough confidence should affect leaderboard rating.",
+        "publicLeaderboardPolicy": "Only mutually confirmed, non-disputed clan results affect leaderboard rating.",
         "modeSystems": {
             "cwa": {
                 "returnsAllowed": False,
-                "signals": ["result", "damagePressure", "tankEfficiency", "pileParticipation", "transitionSpeed", "binding", "survival"],
-                "note": "No-return scoring; a death removes the player from the survivor curve.",
+                "signals": ["mutuallyConfirmedResult"],
+                "note": "CWA ratings use the mutually confirmed clan result only.",
             },
             "wildy": {
                 "returnsAllowed": True,
-                "signals": ["result", "kills", "deaths", "returns", "durationControl", "damagePressure", "thirdPartyAdjustment"],
-                "note": "Return and location-control scoring applies only to accepted Wildy terms.",
+                "signals": ["mutuallyConfirmedResult"],
+                "note": "Wildy ratings use the mutually confirmed clan result only.",
             },
         },
     }

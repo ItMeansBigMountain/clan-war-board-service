@@ -335,7 +335,7 @@ class LeaderboardTests(unittest.TestCase):
         self.assertFalse(schema["modes"]["cwa"]["returnsAllowed"])
         self.assertTrue(schema["modes"]["wildy"]["returnsAllowed"])
         modes = get_fight_modes()
-        self.assertIn("outsiders", modes["membershipValidation"])
+        self.assertIn("does not upload rosters", modes["membershipValidation"])
         profile = plugin_clan_profile(PLUGIN_CLAN)
         self.assertEqual(set(profile["rankings"]), {"cwa", "wildy"})
 
@@ -348,10 +348,11 @@ class LeaderboardTests(unittest.TestCase):
         self.assertNotEqual(terms_hash(cwa), terms_hash(wildy))
         self.assertEqual(get_competitive_leaderboard("bad")["mode"], "cwa")
 
-    def test_judging_system_defines_winner_signals(self):
+    def test_judging_system_requires_mutual_result_confirmation(self):
         system = get_win_judging_system()
         names = {row["name"] for row in system["winnerSignals"]}
-        self.assertTrue({"kills", "deaths", "returns", "durationControl", "damagePressure"}.issubset(names))
+        self.assertEqual(system["system"], "mutual_result_confirmation")
+        self.assertIn("matching leader confirmations", names)
         self.assertIn("leader", " ".join(system["requiredBeforeFight"]))
 
     def test_match_terms_hash_and_two_party_acceptance(self):
@@ -683,22 +684,16 @@ class LeaderboardTests(unittest.TestCase):
         self.assertIsNotNone(summary)
         self.assertEqual(summary["fight"]["terms"]["mode"], "cwa")
         self.assertFalse(summary["fight"]["terms"]["returnsAllowed"])
-        analytics = summary["analytics"]
-        self.assertEqual(analytics["totals"]["damageInflicted"], 35)
-        self.assertEqual(analytics["byClan"]["trapistan"]["eventsTracked"], 8)
-        self.assertNotIn("Enemy", analytics["byOpponent"])
-        self.assertTrue(next(iter(analytics["byOpponent"])).startswith("Private opponent "))
-        self.assertEqual(analytics["dimensions"]["confidence"]["high"], 1)
-        self.assertEqual(analytics["locationHotspots"][0]["regionId"], 12850)
-        event = next(row for row in analytics["events"] if row["type"] == "damage_dealt")
-        self.assertTrue(event["opponentName"].startswith("Private opponent "))
-        self.assertEqual(event["participantClassification"], "outsider_or_unverified")
-        self.assertTrue(event["player"].startswith("Private "))
-        self.assertEqual(event["evidence"], "local_player_hitsplat")
-        self.assertEqual(event["location"]["x"], 3200)
+        self.assertNotIn("analytics", summary)
+        self.assertNotIn("world", summary["fight"]["terms"])
+        self.assertNotIn("location", summary["fight"]["terms"])
+        self.assertNotIn("Enemy", str(summary))
         battles = get_past_battles()["battles"]
         self.assertEqual(battles[0]["fightId"], "fight-1")
-        self.assertEqual(battles[0]["eventCount"], 8)
+        self.assertNotIn("eventCount", battles[0])
+        self.assertNotIn("totals", battles[0])
+        self.assertNotIn("world", battles[0])
+        self.assertNotIn("location", battles[0])
 
 
 if __name__ == "__main__":
