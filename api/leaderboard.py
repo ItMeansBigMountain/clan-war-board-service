@@ -367,6 +367,23 @@ def _load_session(session_id: str) -> dict[str, Any] | None:
     return session
 
 
+def _revoke_installation_sessions(install_hash: str, now: int | None = None) -> None:
+    revoked_at = int(time.time() if now is None else now)
+    sessions = [row for row in INSTALL_SESSIONS.values() if row.get("installHash") == install_hash and not row.get("revokedAtEpoch")]
+    container = cosmos_clans_container()
+    if container is not None:
+        persisted = container.query_items(
+            query="SELECT * FROM c WHERE c.docType = 'installationSession' AND c.installHash = @install AND NOT IS_DEFINED(c.revokedAtEpoch)",
+            parameters=[{"name": "@install", "value": install_hash}],
+            enable_cross_partition_query=True,
+        )
+        known = {str(row.get("id")) for row in sessions}
+        sessions.extend(row for row in persisted if str(row.get("id")) not in known)
+    for session in sessions:
+        session["revokedAtEpoch"] = revoked_at
+        _save_session(session)
+
+
 def _save_war_document(row: dict[str, Any]) -> None:
     container = cosmos_wars_container()
     if container is not None:
@@ -1032,6 +1049,7 @@ def update_challenge(challenge_id: str, payload: dict[str, Any] | None, headers:
         "proposed": {"accept", "counter", "reject", "cancel"},
         "reconfirm_required": {"accept", "counter", "reject", "cancel"},
         "confirmed": {"complete", "counter", "cancel"},
+        "result_confirmation_required": {"complete"},
         "completed": {"dispute"},
     }
     if action not in allowed_by_state.get(str(challenge.get("status") or ""), set()):
@@ -1041,13 +1059,29 @@ def update_challenge(challenge_id: str, payload: dict[str, Any] | None, headers:
     if action == "reject" and actor != challenge.get("opponentClanId"):
         return {"ok": False, "error": "challenge_forbidden"}
     if action == "complete":
-        if challenge.get("status") != "confirmed":
+        if challenge.get("status") not in {"confirmed", "result_confirmation_required"}:
             return {"ok": False, "error": "challenge_not_confirmed"}
         updated = json.loads(json.dumps(challenge))
         result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        result_hash = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+        proposal = updated.get("resultProposal") if isinstance(updated.get("resultProposal"), dict) else None
+        if proposal is None:
+            updated["resultProposal"] = {"hash": result_hash, "result": _clean_audit_payload(result), "submittedBy": [actor], "submittedAt": utc_now_iso()}
+            updated["status"] = "result_confirmation_required"
+            updated["updatedAt"] = utc_now_iso()
+            challenge.clear()
+            challenge.update(updated)
+            _save_war_document(challenge)
+            return {"ok": True, "challenge": challenge, "ratingUpdate": {"applied": False, "reason": "mutual_result_confirmation_required"}}
+        if actor in set(proposal.get("submittedBy") or []):
+            return {"ok": False, "error": "result_confirmation_requires_other_clan"}
+        if not secrets.compare_digest(str(proposal.get("hash") or ""), result_hash):
+            return {"ok": False, "error": "result_confirmation_mismatch"}
+        result = dict(proposal.get("result") or {})
         updated["status"] = "completed"
         updated["completedAt"] = utc_now_iso()
         updated["result"] = _clean_audit_payload(result)
+        updated.pop("resultProposal", None)
         updated["updatedAt"] = utc_now_iso()
         challenge.clear()
         challenge.update(updated)
@@ -1140,6 +1174,7 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
     row["rosterSnapshot"] = _roster_snapshot(roster_payload if isinstance(roster_payload, list) else [player_name], clan_id)
     row["updatedAt"] = now
     save_plugin_clan(row)
+    _revoke_installation_sessions(install_hash)
     session = _issue_session(install_hash, player_hash, clan_id, observed_rank, public_stats,
                              verified_leader=_is_verified_leader(row, install_hash),
                              verified_moderator=_is_verified_moderator(row, install_hash))
@@ -1524,10 +1559,20 @@ def get_rating_audit_records(mode: str = "cwa") -> dict[str, Any]:
     mode = mode.lower().strip()
     if mode not in FIGHT_MODES:
         mode = "cwa"
-    records = [
-        {key: value for key, value in row.items() if key not in {"_etag", "_rid", "_self", "_attachments", "_ts"}}
-        for row in _rating_audits_for_mode(mode)
-    ]
+    records = []
+    for row in _rating_audits_for_mode(mode):
+        raw_input = row.get("input")
+        audit_input: dict[str, Any] = raw_input if isinstance(raw_input, dict) else {}
+        raw_result = audit_input.get("result")
+        result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
+        records.append({
+            "id": row.get("id"), "schemaVersion": row.get("schemaVersion"), "fightId": row.get("fightId"),
+            "mode": row.get("mode"), "appliedAt": row.get("appliedAt"), "reversedAt": row.get("reversedAt"),
+            "reversalReason": row.get("reversalReason"), "termsHash": audit_input.get("termsHash"),
+            "result": {"outcome": result.get("outcome"), "winnerClanId": result.get("winnerClanId"), "telemetryConfidence": result.get("telemetryConfidence")},
+            "ratingsBefore": row.get("ratingsBefore"), "ratingsAfter": row.get("ratingsAfter"),
+            "ratingDeltas": row.get("ratingDeltas"), "algorithm": row.get("algorithm"),
+        })
     return {
         "generatedAt": utc_now_iso(),
         "source": "versioned Clan War Board rating audit records",

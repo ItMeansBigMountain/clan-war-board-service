@@ -150,6 +150,16 @@ class LeaderboardTests(unittest.TestCase):
         self.assertNotEqual(rotated["sessionToken"], result["sessionToken"])
         self.assertEqual(authorize_write(self.auth_headers(result["sessionToken"]), "leader:write")["error"], "invalid_session")
 
+    def test_reregistration_revokes_prior_privacy_and_authority_session(self):
+        install_id = "56565656-5656-4656-8656-565656565656"
+        grant_verified_leader("TRAPISTAN", install_id)
+        public_leader = register_plugin({"installId": install_id, "playerName": "Leader", "clanName": "TRAPISTAN", "clanRank": 126, "publicStats": True})
+
+        private_refresh = register_plugin({"installId": install_id, "playerName": "Leader", "clanName": "TRAPISTAN", "clanRank": 1, "publicStats": False})
+
+        self.assertEqual(authorize_write(self.auth_headers(public_leader["sessionToken"]), "telemetry:write")["error"], "invalid_session")
+        self.assertFalse(leaderboard.INSTALL_SESSIONS[leaderboard._token_hash(private_refresh["sessionToken"])]["publicStats"])
+
     def test_leader_can_create_availability_and_challenge_with_canonical_terms(self):
         grant_verified_leader("TRAPISTAN", "66666666-6666-4666-8666-666666666666")
         result = register_plugin({"installId": "66666666-6666-4666-8666-666666666666", "playerName": "Leader", "clanName": "TRAPISTAN", "clanRank": 100})
@@ -193,6 +203,23 @@ class LeaderboardTests(unittest.TestCase):
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["error"], "challenge_state_conflict")
 
+    def test_result_requires_matching_confirmation_from_both_clans(self):
+        alpha, bravo, fight = self.confirmed_rateable_fight()
+        result = {"winnerClanId": "Alpha", "outcome": "win", "disputed": False, "telemetryConfidence": "high"}
+
+        first = update_challenge(fight, {"action": "complete", "result": result}, self.auth_headers(alpha["sessionToken"]))
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["challenge"]["status"], "result_confirmation_required")
+        self.assertFalse(first["ratingUpdate"]["applied"])
+
+        mismatch = update_challenge(fight, {"action": "complete", "result": {**result, "winnerClanId": "Bravo"}}, self.auth_headers(bravo["sessionToken"]))
+        self.assertFalse(mismatch["ok"])
+        self.assertEqual(mismatch["error"], "result_confirmation_mismatch")
+
+        confirmed = update_challenge(fight, {"action": "complete", "result": result}, self.auth_headers(bravo["sessionToken"]))
+        self.assertTrue(confirmed["ratingUpdate"]["applied"])
+        self.assertEqual(confirmed["challenge"]["status"], "completed")
+
     def test_acceptance_snapshots_both_immutable_rosters_and_classifies_rivals(self):
         grant_verified_leader("Alpha", "14141414-1414-4414-8414-141414141414")
         grant_verified_leader("Bravo", "15151515-1515-4515-8515-151515151515")
@@ -219,7 +246,7 @@ class LeaderboardTests(unittest.TestCase):
         self.assertTrue(accepted["ok"])
         self.assertEqual(leaderboard.classify_participant(accepted["challenge"], "alpha", "BravoPile"), "accepted_rival_roster")
 
-        register_plugin({"installId": "18181818-1818-4818-8818-181818181818", "playerName": "BravoLead", "clanName": "Bravo", "clanRank": 126, "rosterMembers": ["BravoLead", "BravoNew"]})
+        bravo = register_plugin({"installId": "18181818-1818-4818-8818-181818181818", "playerName": "BravoLead", "clanName": "Bravo", "clanRank": 126, "rosterMembers": ["BravoLead", "BravoNew"]})
         countered = update_challenge(created["challenge"]["id"], {"action": "counter", "terms": {"location": "Chaos Temple", "world": 303, "startsAt": "2026-07-20T20:00:00Z", "combatMin": 70, "combatMax": 126, "durationMinutes": 45, "rules": "No overheads"}}, self.auth_headers(alpha["sessionToken"]))
         self.assertTrue(countered["ok"])
         self.assertEqual(countered["challenge"].get("acceptedRosterSnapshots"), {})
@@ -378,6 +405,16 @@ class LeaderboardTests(unittest.TestCase):
         self.assertNotIn("actorInstallHash", str(history))
         self.assertFalse(history["allowedActions"])
 
+    def test_public_rating_audit_excludes_rosters_private_terms_and_raw_result_payload(self):
+        self.completed_rateable_fight()
+        public = get_rating_audit_records("cwa")
+        self.assertEqual(len(public["records"]), 1)
+        serialized = str(public)
+        self.assertNotIn("acceptedRosterSnapshots", serialized)
+        self.assertNotIn("playerHashes", serialized)
+        self.assertNotIn("Clan Wars Arena", serialized)
+        self.assertNotIn("telemetrySummary", serialized)
+
     def test_only_server_verified_moderator_can_correct_or_void_disputed_result(self):
         alpha, bravo, fight = self.completed_rateable_fight()
         update_challenge(fight, {"action": "dispute", "reasonCode": "wrong_result", "statement": "Wrong winner"}, self.auth_headers(bravo["sessionToken"]))
@@ -394,13 +431,19 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(voided["challenge"]["status"], "voided")
 
     def completed_rateable_fight(self):
+        alpha, bravo, fight = self.confirmed_rateable_fight()
+        result = {"winnerClanId": "Alpha", "outcome": "win", "disputed": False, "telemetryConfidence": "high"}
+        update_challenge(fight, {"action": "complete", "result": result}, self.auth_headers(alpha["sessionToken"]))
+        update_challenge(fight, {"action": "complete", "result": result}, self.auth_headers(bravo["sessionToken"]))
+        return alpha, bravo, fight
+
+    def confirmed_rateable_fight(self):
         grant_verified_leader("Alpha", "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
         grant_verified_leader("Bravo", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
         alpha = register_plugin({"installId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "playerName": "Alpha", "clanName": "Alpha", "clanRank": 100, "rosterMembers": ["Alpha", "A2"]})
         bravo = register_plugin({"installId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "playerName": "Bravo", "clanName": "Bravo", "clanRank": 100, "rosterMembers": ["Bravo", "B2"]})
         created = create_challenge({"opponentClanId": "Bravo", "terms": {"location": "Clan Wars Arena", "world": 330, "startsAt": "2026-08-20T20:00:00Z", "combatMin": 70, "combatMax": 126, "durationMinutes": 30, "mode": "cwa", "rules": ""}}, self.auth_headers(alpha["sessionToken"]))
         update_challenge(created["challenge"]["id"], {"action": "accept"}, self.auth_headers(bravo["sessionToken"]))
-        update_challenge(created["challenge"]["id"], {"action": "complete", "result": {"winnerClanId": "Alpha", "outcome": "win", "disputed": False, "telemetryConfidence": "high"}}, self.auth_headers(alpha["sessionToken"]))
         return alpha, bravo, created["challenge"]["id"]
 
     def test_match_terms_reject_invalid_world_range_and_duration(self):
@@ -443,6 +486,14 @@ class LeaderboardTests(unittest.TestCase):
                 "telemetrySummary": {"alphaEvents": 12, "bravoEvents": 10},
             },
         }, self.auth_headers(alpha["sessionToken"]))
+        completed = update_challenge(created["challenge"]["id"], {
+            "action": "complete",
+            "result": {
+                "winnerClanId": "Alpha", "outcome": "win", "disputed": False, "telemetryConfidence": "high",
+                "rosterSnapshots": {"alpha": ["Alpha", "A2"], "bravo": ["Bravo", "B2"]},
+                "telemetrySummary": {"alphaEvents": 12, "bravoEvents": 10},
+            },
+        }, self.auth_headers(bravo["sessionToken"]))
 
         self.assertTrue(completed["ok"])
         self.assertEqual(completed["challenge"]["status"], "completed")
@@ -461,9 +512,9 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(len(audits["records"]), 1)
         audit = audits["records"][0]
         self.assertEqual(audit["schemaVersion"], "rating.v1")
-        self.assertEqual(audit["input"]["fightId"], created["challenge"]["id"])
-        self.assertEqual(audit["input"]["termsHash"], created["challenge"]["termsHash"])
-        self.assertEqual(audit["input"]["result"]["telemetrySummary"], {"alphaEvents": 12, "bravoEvents": 10})
+        self.assertEqual(audit["fightId"], created["challenge"]["id"])
+        self.assertEqual(audit["termsHash"], created["challenge"]["termsHash"])
+        self.assertNotIn("telemetrySummary", str(audit))
         self.assertEqual(audit["ratingDeltas"], {"alpha": 16, "bravo": -16})
 
     def test_ratings_ignore_disputed_low_confidence_or_incomplete_roster_results(self):
@@ -477,6 +528,7 @@ class LeaderboardTests(unittest.TestCase):
             update_challenge(created["challenge"]["id"], {"action": "accept"}, self.auth_headers(bravo["sessionToken"]))
             if mutate_fight:
                 mutate_fight(next(row for row in leaderboard.CHALLENGES if row["id"] == created["challenge"]["id"]))
+            update_challenge(created["challenge"]["id"], {"action": "complete", "result": result}, self.auth_headers(alpha["sessionToken"]))
             completed = update_challenge(created["challenge"]["id"], {"action": "complete", "result": result}, self.auth_headers(bravo["sessionToken"]))
             self.assertTrue(completed["ok"])
             self.assertFalse(completed["ratingUpdate"]["applied"])
@@ -527,6 +579,11 @@ class LeaderboardTests(unittest.TestCase):
                 "rosterSnapshots": {"alpha": ["Alpha", "A2"], "bravo": ["Bravo", "B2"]},
             },
         }, self.auth_headers(alpha["sessionToken"]))
+        completed = update_challenge(created["challenge"]["id"], {
+            "action": "complete",
+            "result": {"winnerClanId": "Alpha", "outcome": "win", "disputed": False, "telemetryConfidence": "high",
+                       "rosterSnapshots": {"alpha": ["Alpha", "A2"], "bravo": ["Bravo", "B2"]}},
+        }, self.auth_headers(bravo["sessionToken"]))
 
         self.assertTrue(completed["ok"])
         self.assertFalse(completed["ratingUpdate"]["applied"])
@@ -549,6 +606,11 @@ class LeaderboardTests(unittest.TestCase):
                 "rosterSnapshots": {"alpha": ["Alpha", "A2"], "bravo": ["Bravo", "B2"]},
             },
         }, self.auth_headers(alpha["sessionToken"]))
+        completed_partial = update_challenge(created_partial["challenge"]["id"], {
+            "action": "complete",
+            "result": {"winnerClanId": "Alpha", "outcome": "win", "disputed": False, "telemetryConfidence": "high",
+                       "rosterSnapshots": {"alpha": ["Alpha", "A2"], "bravo": ["Bravo", "B2"]}},
+        }, self.auth_headers(bravo["sessionToken"]))
         self.assertFalse(completed_partial["ratingUpdate"]["applied"])
         self.assertEqual(completed_partial["ratingUpdate"]["reason"], "accepted_roster_snapshots_required")
         self.assertEqual(get_rating_audit_records("cwa")["records"], [])
