@@ -331,7 +331,7 @@ class LeaderboardTests(unittest.TestCase):
             "terms": {"world": 330, "startsAt": starts_at, "durationMinutes": 30},
         })
         events = {"events": [
-            {"type": "damage_dealt", "clanName": "TRAPISTAN", "opponentName": "Enemy", "amount": 31, "world": 330, "tick": 10, "timestamp": now_ms,
+            {"type": "damage_dealt", "clanName": "TRAPISTAN", "playerName": "Oyama", "playerPublic": True, "opponentName": "Enemy", "amount": 31, "world": 330, "tick": 10, "timestamp": now_ms,
              "evidence": "local_player_hitsplat", "confidence": "high", "relation": "non_own_clan", "regionId": 12850, "x": 3200, "y": 3600, "plane": 0},
             {"type": "friendly_fire_damage", "clanName": "TRAPISTAN", "amount": 4, "world": 330, "tick": 10, "timestamp": now_ms + 1},
             {"type": "damage_taken", "clanName": "TRAPISTAN", "amount": 18, "world": 330, "tick": 11, "timestamp": now_ms + 2},
@@ -372,14 +372,18 @@ class LeaderboardTests(unittest.TestCase):
         leaderboard.CHALLENGES[0]["status"] = "completed"
         summary = get_public_fight_summary("fight-1")
         self.assertIsNotNone(summary)
+        self.assertEqual(summary["fight"]["terms"]["mode"], "cwa")
+        self.assertFalse(summary["fight"]["terms"]["returnsAllowed"])
         analytics = summary["analytics"]
         self.assertEqual(analytics["totals"]["damageInflicted"], 35)
         self.assertEqual(analytics["byClan"]["trapistan"]["eventsTracked"], 8)
-        self.assertIn("Enemy", analytics["byOpponent"])
+        self.assertNotIn("Enemy", analytics["byOpponent"])
+        self.assertTrue(next(iter(analytics["byOpponent"])).startswith("Private opponent "))
         self.assertEqual(analytics["dimensions"]["confidence"]["high"], 1)
         self.assertEqual(analytics["locationHotspots"][0]["regionId"], 12850)
         event = next(row for row in analytics["events"] if row["type"] == "damage_dealt")
-        self.assertEqual(event["opponentName"], "Enemy")
+        self.assertTrue(event["opponentName"].startswith("Private opponent "))
+        self.assertEqual(event["participantClassification"], "outsider_or_unverified")
         self.assertTrue(event["player"].startswith("Private "))
         self.assertEqual(event["evidence"], "local_player_hitsplat")
         self.assertEqual(event["location"]["x"], 3200)

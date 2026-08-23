@@ -417,6 +417,14 @@ def _accumulate_metric(metrics: dict[str, int], row: dict[str, Any]) -> None:
 
 def _public_event(row: dict[str, Any]) -> dict[str, Any]:
     player = row.get("publicPlayerName") or ("Private " + str(row.get("playerHash") or row.get("installHash") or "member")[:8])
+    opponent = str(row.get("opponentName") or "").strip()
+    public_opponent = "Private opponent " + hashlib.sha256(opponent.lower().encode("utf-8")).hexdigest()[:8] if opponent else None
+    relation = row.get("relation") or "unknown"
+    participant_classification = {
+        "self": "reporting_player",
+        "own_clan": "accepted_roster_or_own_clan",
+        "non_own_clan": "outsider_or_unverified",
+    }.get(relation, "unattributed")
     return {
         "id": row.get("id"),
         "fightId": row.get("fightId"),
@@ -424,7 +432,8 @@ def _public_event(row: dict[str, Any]) -> dict[str, Any]:
         "player": player,
         "playerPublic": bool(row.get("playerPublic")),
         "type": row.get("type"),
-        "opponentName": row.get("opponentName"),
+        "opponentName": public_opponent,
+        "participantClassification": participant_classification,
         "amount": int(row.get("amount") or 0),
         "world": int(row.get("world") or 0),
         "tick": int(row.get("tick") or 0),
@@ -432,7 +441,7 @@ def _public_event(row: dict[str, Any]) -> dict[str, Any]:
         "observedAt": row.get("observedAt"),
         "evidence": row.get("evidence") or "legacy_client_observation",
         "confidence": row.get("confidence") or "unknown",
-        "relation": row.get("relation") or "unknown",
+        "relation": relation,
         "location": row.get("location") or {"regionId": 0, "x": 0, "y": 0, "plane": 0},
     }
 
@@ -493,7 +502,8 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int, now: int | None = None) -> dict[str, Any]:
+def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int,
+                   public_stats: bool = False, now: int | None = None) -> dict[str, Any]:
     issued_at = int(time.time() if now is None else now)
     token = secrets.token_urlsafe(32)
     capabilities = ["member:read", "telemetry:write"]
@@ -506,6 +516,7 @@ def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int,
         "playerHash": player_hash,
         "clanId": clan_id,
         "observedClanRank": rank,
+        "publicStats": bool(public_stats),
         "capabilities": capabilities,
         "issuedAtEpoch": issued_at,
         "expiresAtEpoch": issued_at + SESSION_SECONDS,
@@ -568,7 +579,8 @@ def rotate_installation_session(headers: dict[str, str] | None) -> dict[str, Any
     session = authorized["session"]
     session["revokedAtEpoch"] = int(time.time())
     _save_session(session)
-    issued = _issue_session(session["installHash"], str(session.get("playerHash") or session["installHash"]), session["clanId"], int(session.get("observedClanRank") or -1))
+    issued = _issue_session(session["installHash"], str(session.get("playerHash") or session["installHash"]), session["clanId"],
+                            int(session.get("observedClanRank") or -1), bool(session.get("publicStats", False)))
     return {"ok": True, **issued}
 
 
@@ -735,7 +747,7 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
     row["member_count"] = len(members)
     row["updatedAt"] = now
     save_plugin_clan(row)
-    session = _issue_session(install_hash, player_hash, clan_id, observed_rank)
+    session = _issue_session(install_hash, player_hash, clan_id, observed_rank, public_stats)
     return {
         "ok": True,
         "clanId": clan_id,
@@ -991,6 +1003,8 @@ def get_public_fight_summary(fight_id: str) -> dict[str, Any] | None:
                 "durationMinutes": terms.get("durationMinutes"),
                 "combatMin": terms.get("combatMin"),
                 "combatMax": terms.get("combatMax"),
+                "mode": terms.get("mode") or "cwa",
+                "returnsAllowed": (terms.get("mode") or "cwa") == "wildy" and bool(terms.get("returnsAllowed", True)),
                 "rules": terms.get("rules"),
             },
         },
@@ -1163,8 +1177,8 @@ def submit_telemetry_batch(payload: dict[str, Any] | None, client_headers: dict[
             "installHash": install_hash,
             "playerHash": str(session.get("playerHash") or install_hash),
             "type": event_type,
-            "playerPublic": bool(event.get("playerPublic", False)),
-            "publicPlayerName": event.get("playerName") if bool(event.get("playerPublic", False)) else None,
+            "playerPublic": bool(session.get("publicStats", False)),
+            "publicPlayerName": event.get("playerName") if bool(session.get("publicStats", False)) else None,
             "opponentName": str(event.get("opponentName") or "")[:12] or None,
             "amount": amount,
             "world": world,
