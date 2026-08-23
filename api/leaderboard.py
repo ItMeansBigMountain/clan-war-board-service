@@ -120,6 +120,7 @@ AVAILABILITY: list[dict[str, Any]] = []
 CHALLENGES: list[dict[str, Any]] = []
 TELEMETRY_EVENTS: list[dict[str, Any]] = []
 RATING_AUDIT_RECORDS: list[dict[str, Any]] = []
+MODERATION_AUDIT_RECORDS: list[dict[str, Any]] = []
 SESSION_SECONDS = 3600
 WRITE_CLOCK_SKEW_SECONDS = 300
 WRITE_RATE_LIMIT = 30
@@ -163,8 +164,23 @@ def grant_verified_leader(clan_name: str, install_id: str) -> None:
     save_plugin_clan(row)
 
 
+def grant_verified_moderator(clan_name: str, install_id: str) -> None:
+    """Server-side helper; moderator authority is never accepted from a client claim."""
+    clan_id = normalize_clan_id(clan_name)
+    row = load_plugin_clan(clan_id) or {"clan_id": clan_id, "clan_name": clan_name, "members": []}
+    hashes = set(row.get("verifiedModeratorInstallHashes") or [])
+    hashes.add(_install_hash(install_id))
+    row["verifiedModeratorInstallHashes"] = sorted(hashes)
+    row["updatedAt"] = utc_now_iso()
+    save_plugin_clan(row)
+
+
 def _is_verified_leader(clan: dict[str, Any], install_hash: str) -> bool:
     return install_hash in set(clan.get("verifiedLeaderInstallHashes") or [])
+
+
+def _is_verified_moderator(clan: dict[str, Any], install_hash: str) -> bool:
+    return install_hash in set(clan.get("verifiedModeratorInstallHashes") or [])
 
 
 def classify_participant(fight: dict[str, Any], reporting_clan_id: str, player_name: str) -> str:
@@ -468,6 +484,7 @@ def _apply_rating_update(fight: dict[str, Any], result: dict[str, Any]) -> dict[
         value = row.get(f"{mode}Rating")
         return int(value) if value is not None else RATING_START
 
+    before_was_rated = {creator_id: creator.get(f"{mode}Rating") is not None, opponent_id: opponent.get(f"{mode}Rating") is not None}
     before = {
         creator_id: stored_rating(creator),
         opponent_id: stored_rating(opponent),
@@ -507,12 +524,62 @@ def _apply_rating_update(fight: dict[str, Any], result: dict[str, Any]) -> dict[
             "result": result,
         }),
         "ratingsBefore": before,
+        "ratingsBeforeWereRated": before_was_rated,
         "ratingsAfter": after,
         "ratingDeltas": deltas,
         "algorithm": {"name": "elo", "kFactor": RATING_K_FACTOR, "startRating": RATING_START},
     }
     _save_rating_audit(audit)
     return {"applied": True, "auditId": audit["id"], "schemaVersion": RATING_SCHEMA_VERSION, "mode": mode, "ratingDeltas": deltas}
+
+
+def _reverse_rating_update(fight: dict[str, Any], reason: str) -> dict[str, Any]:
+    mode = str((fight.get("terms") or {}).get("mode") or "cwa")
+    audit = _rating_audit_for_fight(str(fight.get("id") or ""), mode)
+    if audit is None or audit.get("reversedAt"):
+        return {"reversed": False, "reason": "rating_not_applied" if audit is None else "already_reversed"}
+    result = (audit.get("input") or {}).get("result") or {}
+    winner = normalize_clan_id(str(result.get("winnerClanId") or ""))
+    outcome = str(result.get("outcome") or "").lower()
+    for clan_id, rating in (audit.get("ratingsBefore") or {}).items():
+        clan = load_plugin_clan(clan_id) or {"clan_id": clan_id, "clan_name": clan_id, "members": []}
+        clan[f"{mode}Rating"] = int(rating) if bool((audit.get("ratingsBeforeWereRated") or {}).get(clan_id)) else None
+        record = _rating_record(clan, mode)
+        key = "draws" if outcome == "draw" else ("wins" if clan_id == winner else "losses")
+        record[key] = max(0, record[key] - 1)
+        clan[f"{mode}Record"] = record
+        save_plugin_clan(clan)
+    audit["reversedAt"] = utc_now_iso()
+    audit["reversalReason"] = str(reason)[:500]
+    _save_war_document(audit)
+    return {"reversed": True, "auditId": audit.get("id"), "mode": mode}
+
+
+def _clean_evidence(value: Any) -> list[dict[str, Any]]:
+    cleaned = []
+    for row in (value if isinstance(value, list) else [])[:20]:
+        if not isinstance(row, dict):
+            continue
+        evidence_type = str(row.get("type") or "other").strip().lower()
+        if evidence_type not in {"outsider", "crasher", "telemetry", "screenshot", "other"}:
+            evidence_type = "other"
+        cleaned.append({"type": evidence_type, "eventIds": [str(item)[:128] for item in (row.get("eventIds") or [])[:50]], "note": str(row.get("note") or "").strip()[:500]})
+    return cleaned
+
+
+def _record_moderation(fight: dict[str, Any], action: str, session: dict[str, Any], detail: dict[str, Any]) -> None:
+    row = {"id": str(uuid.uuid4()), "docType": "moderationAudit", "fightId": fight.get("id"), "action": action,
+           "actorClanId": session.get("clanId"), "actorInstallHash": session.get("installHash"), "createdAt": utc_now_iso(),
+           "detail": _clean_audit_payload(detail)}
+    MODERATION_AUDIT_RECORDS.append(row)
+    _save_war_document(row)
+
+
+def _moderation_rows(fight_id: str) -> list[dict[str, Any]]:
+    container = cosmos_wars_container()
+    if container is None:
+        return [row for row in MODERATION_AUDIT_RECORDS if row.get("fightId") == fight_id]
+    return list(container.query_items(query="SELECT * FROM c WHERE c.docType = 'moderationAudit' AND c.fightId = @fight ORDER BY c.createdAt ASC", parameters=[{"name": "@fight", "value": fight_id}], enable_cross_partition_query=True))
 
 
 def _load_challenge(challenge_id: str) -> dict[str, Any] | None:
@@ -722,12 +789,15 @@ def _token_hash(token: str) -> str:
 
 
 def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int,
-                   public_stats: bool = False, now: int | None = None, verified_leader: bool = False) -> dict[str, Any]:
+                   public_stats: bool = False, now: int | None = None, verified_leader: bool = False,
+                   verified_moderator: bool = False) -> dict[str, Any]:
     issued_at = int(time.time() if now is None else now)
     token = secrets.token_urlsafe(32)
     capabilities = ["member:read", "telemetry:write"]
     if verified_leader:
         capabilities.extend(["leader:write", "challenge:write"])
+    if verified_moderator:
+        capabilities.append("moderation:write")
     session = {
         "id": _token_hash(token),
         "docType": "installationSession",
@@ -741,7 +811,7 @@ def _issue_session(install_hash: str, player_hash: str, clan_id: str, rank: int,
         "expiresAtEpoch": issued_at + SESSION_SECONDS,
         "nonces": [],
         "requestTimes": [],
-        "trustLevel": "server_verified_leader_claim" if verified_leader else "registered_member",
+        "trustLevel": "server_verified_moderator" if verified_moderator else ("server_verified_leader_claim" if verified_leader else "registered_member"),
     }
     _save_session(session)
     return {
@@ -801,7 +871,8 @@ def rotate_installation_session(headers: dict[str, str] | None) -> dict[str, Any
     clan = load_plugin_clan(str(session["clanId"])) or {}
     issued = _issue_session(session["installHash"], str(session.get("playerHash") or session["installHash"]), session["clanId"],
                             int(session.get("observedClanRank") or -1), bool(session.get("publicStats", False)),
-                            verified_leader=_is_verified_leader(clan, str(session["installHash"])))
+                            verified_leader=_is_verified_leader(clan, str(session["installHash"])),
+                            verified_moderator=_is_verified_moderator(clan, str(session["installHash"])))
     return {"ok": True, **issued}
 
 
@@ -888,6 +959,62 @@ def get_challenges(headers: dict[str, str] | None) -> dict[str, Any]:
     return {"ok": True, "challenges": visible}
 
 
+def get_moderation_audit(challenge_id: str, headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "member:read")
+    if not authorized.get("ok"):
+        return authorized
+    challenge = _load_challenge(challenge_id)
+    if challenge is None:
+        return {"ok": False, "error": "challenge_not_found"}
+    session = authorized["session"]
+    moderator = "moderation:write" in session.get("capabilities", [])
+    if not moderator and session.get("clanId") not in {challenge.get("creatorClanId"), challenge.get("opponentClanId")}:
+        return {"ok": False, "error": "challenge_forbidden"}
+    records = []
+    for row in _moderation_rows(challenge_id):
+        visible = {key: value for key, value in row.items() if key not in {"actorInstallHash", "_etag", "_rid", "_self", "_attachments", "_ts", "docType"}}
+        records.append(visible)
+    return {"ok": True, "fightId": challenge_id, "status": challenge.get("status"),
+            "access": "moderator" if moderator else "member_read_only",
+            "allowedActions": ["correct", "void"] if moderator else [], "records": records}
+
+
+def moderate_challenge(challenge_id: str, payload: dict[str, Any] | None, headers: dict[str, str] | None) -> dict[str, Any]:
+    authorized = authorize_write(headers, "moderation:write")
+    if not authorized.get("ok"):
+        return authorized
+    challenge = _load_challenge(challenge_id)
+    if challenge is None:
+        return {"ok": False, "error": "challenge_not_found"}
+    request_payload: dict[str, Any] = payload if isinstance(payload, dict) else {}
+    action = str(request_payload.get("action") or "").strip().lower()
+    reason = str(request_payload.get("reason") or "").strip()[:1000]
+    if action not in {"correct", "void"} or not reason:
+        return {"ok": False, "error": "invalid_moderation_action"}
+    if challenge.get("status") not in {"disputed", "completed"}:
+        return {"ok": False, "error": "moderation_state_conflict"}
+    result: dict[str, Any] = dict(request_payload["result"]) if isinstance(request_payload.get("result"), dict) else {}
+    outcome = str(result.get("outcome") or "").strip().lower()
+    if action == "correct" and outcome not in {"win", "draw", "no_contest"}:
+        return {"ok": False, "error": "invalid_corrected_result"}
+    reversal = _reverse_rating_update(challenge, "moderator " + action + ": " + reason)
+    if action == "void":
+        challenge["status"] = "voided"
+        challenge["voidReason"] = reason
+        rating_update = {"applied": False, "reason": "voided_result"}
+    else:
+        result["disputed"] = False
+        challenge["result"] = _clean_audit_payload(result)
+        challenge["status"] = "completed"
+        challenge["correctedAt"] = utc_now_iso()
+        rating_update = _apply_rating_update(challenge, challenge["result"])
+        challenge["ratingUpdate"] = rating_update
+    challenge["updatedAt"] = utc_now_iso()
+    _record_moderation(challenge, "result_" + action, authorized["session"], {"reason": reason, "result": challenge.get("result") if action == "correct" else None, "ratingReversal": reversal})
+    _save_war_document(challenge)
+    return {"ok": True, "challenge": challenge, "ratingReversal": reversal, "ratingUpdate": rating_update}
+
+
 def update_challenge(challenge_id: str, payload: dict[str, Any] | None, headers: dict[str, str] | None) -> dict[str, Any]:
     authorized = authorize_write(headers, "challenge:write")
     if not authorized.get("ok"):
@@ -901,6 +1028,14 @@ def update_challenge(challenge_id: str, payload: dict[str, Any] | None, headers:
         return {"ok": False, "error": "challenge_forbidden"}
     payload = payload if isinstance(payload, dict) else {}
     action = str(payload.get("action") or "").strip().lower()
+    allowed_by_state = {
+        "proposed": {"accept", "counter", "reject", "cancel"},
+        "reconfirm_required": {"accept", "counter", "reject", "cancel"},
+        "confirmed": {"complete", "counter", "cancel"},
+        "completed": {"dispute"},
+    }
+    if action not in allowed_by_state.get(str(challenge.get("status") or ""), set()):
+        return {"ok": False, "error": "challenge_state_conflict"}
     if action == "cancel" and actor != challenge.get("creatorClanId"):
         return {"ok": False, "error": "challenge_forbidden"}
     if action == "reject" and actor != challenge.get("opponentClanId"):
@@ -920,6 +1055,20 @@ def update_challenge(challenge_id: str, payload: dict[str, Any] | None, headers:
         challenge["ratingUpdate"] = rating_update
         _save_war_document(challenge)
         return {"ok": True, "challenge": challenge, "ratingUpdate": rating_update}
+    if action == "dispute":
+        if challenge.get("status") != "completed":
+            return {"ok": False, "error": "result_not_completed"}
+        reason_code = str(payload.get("reasonCode") or "").strip().lower()
+        if reason_code not in {"wrong_result", "third_party_interference", "telemetry_gap", "roster_violation", "rules_violation", "other"}:
+            return {"ok": False, "error": "invalid_dispute_reason"}
+        detail = {"reasonCode": reason_code, "statement": str(payload.get("statement") or "").strip()[:1000], "evidence": _clean_evidence(payload.get("evidence"))}
+        reversal = _reverse_rating_update(challenge, "participant dispute: " + reason_code)
+        challenge["status"] = "disputed"
+        challenge["dispute"] = detail
+        challenge["updatedAt"] = utc_now_iso()
+        _record_moderation(challenge, "dispute_opened", authorized["session"], detail)
+        _save_war_document(challenge)
+        return {"ok": True, "challenge": challenge, "ratingReversal": reversal}
     try:
         updated = apply_challenge_action(challenge, action, actor, payload.get("terms"))
     except ValueError as exc:
@@ -992,7 +1141,8 @@ def register_plugin(payload: dict[str, Any] | None) -> dict[str, Any]:
     row["updatedAt"] = now
     save_plugin_clan(row)
     session = _issue_session(install_hash, player_hash, clan_id, observed_rank, public_stats,
-                             verified_leader=_is_verified_leader(row, install_hash))
+                             verified_leader=_is_verified_leader(row, install_hash),
+                             verified_moderator=_is_verified_moderator(row, install_hash))
     return {
         "ok": True,
         "clanId": clan_id,

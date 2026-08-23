@@ -35,6 +35,9 @@ from leaderboard import (
     get_challenges,
     get_my_player_metrics,
     update_challenge,
+    get_moderation_audit,
+    grant_verified_moderator,
+    moderate_challenge,
     rotate_installation_session,
     search_clans,
     submit_telemetry_batch,
@@ -72,6 +75,7 @@ class LeaderboardTests(unittest.TestCase):
         leaderboard.CHALLENGES.clear()
         leaderboard.TELEMETRY_EVENTS.clear()
         leaderboard.RATING_AUDIT_RECORDS.clear()
+        leaderboard.MODERATION_AUDIT_RECORDS.clear()
 
     def test_health(self):
         payload = health()
@@ -182,6 +186,12 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(len(public["scheduled"]), 1)
         self.assertNotIn("world", str(public["scheduled"]).lower())
         self.assertNotIn("location", str(public["scheduled"]).lower())
+
+    def test_challenge_lifecycle_rejects_actions_after_terminal_state(self):
+        alpha, bravo, fight = self.completed_rateable_fight()
+        invalid = update_challenge(fight, {"action": "accept"}, self.auth_headers(bravo["sessionToken"]))
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"], "challenge_state_conflict")
 
     def test_acceptance_snapshots_both_immutable_rosters_and_classifies_rivals(self):
         grant_verified_leader("Alpha", "14141414-1414-4414-8414-141414141414")
@@ -344,6 +354,54 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(challenge["status"], "reconfirm_required")
         self.assertEqual(challenge["acceptedBy"], ["alpha"])
         self.assertNotEqual(challenge["termsHash"], terms_hash(terms))
+
+    def test_completed_result_can_be_disputed_with_sanitized_outsider_evidence_and_rating_reversed(self):
+        alpha, bravo, fight = self.completed_rateable_fight()
+        disputed = update_challenge(fight, {
+            "action": "dispute",
+            "reasonCode": "third_party_interference",
+            "statement": "Crashers changed the result",
+            "evidence": [{"type": "outsider", "eventIds": ["evt-1"], "note": "Observed outsider"}],
+        }, self.auth_headers(bravo["sessionToken"]))
+        self.assertTrue(disputed["ok"])
+        self.assertEqual(disputed["challenge"]["status"], "disputed")
+        self.assertTrue(disputed["ratingReversal"]["reversed"])
+        self.assertNotIn("sessionToken", str(disputed))
+        self.assertIsNone(next(row for row in get_competitive_leaderboard("cwa")["standings"] if row["clan_id"] == "alpha")["rating"])
+
+    def test_member_read_only_moderation_view_excludes_private_actor_and_internal_fields(self):
+        alpha, bravo, fight = self.completed_rateable_fight()
+        update_challenge(fight, {"action": "dispute", "reasonCode": "wrong_result", "statement": "Score is wrong"}, self.auth_headers(bravo["sessionToken"]))
+        history = get_moderation_audit(fight, self.auth_headers(alpha["sessionToken"]))
+        self.assertTrue(history["ok"])
+        self.assertEqual(history["access"], "member_read_only")
+        self.assertNotIn("actorInstallHash", str(history))
+        self.assertFalse(history["allowedActions"])
+
+    def test_only_server_verified_moderator_can_correct_or_void_disputed_result(self):
+        alpha, bravo, fight = self.completed_rateable_fight()
+        update_challenge(fight, {"action": "dispute", "reasonCode": "wrong_result", "statement": "Wrong winner"}, self.auth_headers(bravo["sessionToken"]))
+        denied = moderate_challenge(fight, {"action": "correct", "reason": "reviewed", "result": {"outcome": "draw", "telemetryConfidence": "verified"}}, self.auth_headers(alpha["sessionToken"]))
+        self.assertEqual(denied["error"], "capability_denied")
+        grant_verified_moderator("Alpha", "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+        moderator = register_plugin({"installId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "playerName": "Mod", "clanName": "Alpha", "clanRank": 1})
+        corrected = moderate_challenge(fight, {"action": "correct", "reason": "bilateral evidence review", "result": {"outcome": "draw", "telemetryConfidence": "verified", "disputed": False}}, self.auth_headers(moderator["sessionToken"]))
+        self.assertTrue(corrected["ok"])
+        self.assertEqual(corrected["challenge"]["status"], "completed")
+        self.assertEqual(corrected["challenge"]["result"]["outcome"], "draw")
+        voided = moderate_challenge(fight, {"action": "void", "reason": "evidence integrity failure"}, self.auth_headers(moderator["sessionToken"]))
+        self.assertTrue(voided["ok"])
+        self.assertEqual(voided["challenge"]["status"], "voided")
+
+    def completed_rateable_fight(self):
+        grant_verified_leader("Alpha", "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+        grant_verified_leader("Bravo", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+        alpha = register_plugin({"installId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "playerName": "Alpha", "clanName": "Alpha", "clanRank": 100, "rosterMembers": ["Alpha", "A2"]})
+        bravo = register_plugin({"installId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "playerName": "Bravo", "clanName": "Bravo", "clanRank": 100, "rosterMembers": ["Bravo", "B2"]})
+        created = create_challenge({"opponentClanId": "Bravo", "terms": {"location": "Clan Wars Arena", "world": 330, "startsAt": "2026-08-20T20:00:00Z", "combatMin": 70, "combatMax": 126, "durationMinutes": 30, "mode": "cwa", "rules": ""}}, self.auth_headers(alpha["sessionToken"]))
+        update_challenge(created["challenge"]["id"], {"action": "accept"}, self.auth_headers(bravo["sessionToken"]))
+        update_challenge(created["challenge"]["id"], {"action": "complete", "result": {"winnerClanId": "Alpha", "outcome": "win", "disputed": False, "telemetryConfidence": "high"}}, self.auth_headers(alpha["sessionToken"]))
+        return alpha, bravo, created["challenge"]["id"]
 
     def test_match_terms_reject_invalid_world_range_and_duration(self):
         with self.assertRaises(ValueError):

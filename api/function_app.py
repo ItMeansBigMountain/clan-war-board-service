@@ -21,12 +21,14 @@ from leaderboard import (
     get_win_judging_system,
     get_challenges,
     get_my_player_metrics,
+    get_moderation_audit,
     health,
     create_availability,
     create_challenge,
     register_plugin,
     rotate_installation_session,
     update_challenge,
+    moderate_challenge,
     search_clans,
     submit_telemetry_batch,
 )
@@ -147,6 +149,13 @@ if func is not None:
     def plugin_challenge_action_route(req):
         challenge_id = req.route_params.get("challengeId", "")
         return write_response(update_challenge(challenge_id, request_json(req), dict(req.headers or {})))
+
+    @app.route(route="plugin/challenges/{challengeId}/moderation", methods=["GET", "POST"])
+    def plugin_challenge_moderation_route(req):
+        challenge_id = req.route_params.get("challengeId", "")
+        if req.method == "GET":
+            return write_response(get_moderation_audit(challenge_id, dict(req.headers or {})))
+        return write_response(moderate_challenge(challenge_id, request_json(req), dict(req.headers or {})))
 
     @app.route(route="plugin/me/metrics", methods=["GET"])
     def plugin_my_metrics_route(req):
