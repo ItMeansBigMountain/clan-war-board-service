@@ -313,7 +313,7 @@ class LeaderboardTests(unittest.TestCase):
     def test_public_availability_is_empty_until_real_plugin_posts(self):
         payload = get_public_availability()
         self.assertEqual(payload["availability"], [])
-        self.assertIn("RuneLite leader submissions", payload["emptyState"])
+        self.assertIn("Authorized clan leaders", payload["emptyState"])
         fields = " ".join(row["name"] for row in payload["fightSetupFields"])
         self.assertIn("world", fields)
         self.assertIn("durationMinutes", fields)

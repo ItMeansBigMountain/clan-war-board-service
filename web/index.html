@@ -119,8 +119,8 @@
           <div class="hero">
             <div class="panel hero-copy">
               <div class="eyebrow">CWA first · Wilderness second</div>
-              <h1>Set the fight. Prove the performance. Build the clan scene.</h1>
-              <p>Clan leaders arrange CWA and Wilderness fights, lock identical terms, validate rosters, rank both formats separately, and publish evidence-backed fight history.</p>
+              <h1>Set the fight. Confirm the result. Build the clan scene.</h1>
+              <p>Clan leaders arrange CWA and Wilderness fights, lock identical terms, confirm results from both sides, and keep each format's record separate.</p>
               <div class="stats">
                 <div class="stat"><b id="stat-clans">0</b><span>registered plugin clans</span></div>
                 <div class="stat"><b id="stat-members">0</b><span>tracked members</span></div>
@@ -129,11 +129,11 @@
             </div>
             <div class="panel hero-art" id="hero-art"><div class="caption"><div class="eyebrow">Wilderness fights</div><h2 id="hero-title">Clan battle board</h2><p>Built for leaders who want clear terms before the fight and clear records afterward.</p></div></div>
           </div>
-          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Privacy and performance</div><h2>Public worlds, private player tracking, low-lag sync.</h2><p>Fight worlds are public to bring activity back to the Wilderness. Individual member performance can stay private on the website, and the plugin sends batched war telemetry instead of one request per visible player.</p></div>
+          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Privacy by design</div><h2>Clan coordination without opponent tracking.</h2><p>The plugin registers the signed-in player's installation, name, primary clan, observed local rank, and plugin version. It does not upload clan rosters, combat events, player locations, opponent names, gear, or nearby-player observations.</p></div>
           <div class="grid">
             <div class="card panel"><h3>Worlds are public</h3><p>Open challenges and completed records can show the world so clans know where action is forming.</p></div>
-            <div class="card panel"><h3>Members control public stats</h3><p>Members can keep their player name off public performance pages while still helping clan-level war scoring.</p></div>
-            <div class="card panel"><h3>Batched uploads</h3><p>The plugin queues local fight events and flushes them in small batches to avoid war-time API spam and client lag.</p></div>
+            <div class="card panel"><h3>Minimal registration</h3><p>Registration is limited to the local player's board identity and authorization data. The service also receives the connection IP through normal HTTPS hosting.</p></div>
+            <div class="card panel"><h3>No opponent telemetry</h3><p>The production plugin does not collect or upload combat, location, roster, gear, nearby-player, or opponent-name observations.</p></div>
           </div>
           <div class="page-head" style="margin-top:26px"><div class="eyebrow">Leader agreement</div><h2>Terms every fight should lock before it starts.</h2><p>Both leaders should confirm the same terms before members are rallied. Any change should require both clans to reconfirm.</p></div>
           <div class="panel card"><div class="setup-grid" id="home-setup-grid"></div></div>
@@ -142,7 +142,7 @@
         </section>
 
         <section class="page" data-page="/clans">
-          <div class="page-head"><div class="eyebrow">Clan directory</div><h2>Only clans using the plugin show up here.</h2><p>No random external clan extraction. A clan profile appears after its leaders/members use Clan War Board, then the in-depth view becomes fight history, member count, records, kills, deaths, returns, damage, and public stats.</p></div>
+          <div class="page-head"><div class="eyebrow">Clan directory</div><h2>Only clans using the plugin show up here.</h2><p>No random external clan extraction. A clan profile appears after a member registers through Clan War Board; public pages show clan-level board and mutually confirmed result history.</p></div>
           <div class="search"><input id="clan-search" placeholder="Search registered plugin clans…" /><button class="btn" id="search-button">Search</button></div>
           <div class="grid" id="clan-grid"></div>
         </section>
@@ -153,15 +153,15 @@
         </section>
 
         <section class="page" data-page="/leaderboard">
-          <div class="page-head"><div class="eyebrow">Competitive table</div><h2>Separate CWA and Wildy ranks.</h2><p>CWA emphasizes no-return results, damage pressure, tanking, binds, off-prayer accuracy and pile work. Wildy additionally rewards returns and location control.</p></div>
+          <div class="page-head"><div class="eyebrow">Competitive table</div><h2>Separate CWA and Wildy ranks.</h2><p>CWA and Wildy results never share a rating bucket. Ratings change only after both participating clans confirm the same eligible, non-disputed result.</p></div>
           <div class="mode-switch"><button class="btn active" data-rank-mode="cwa">CWA rank</button><button class="btn" data-rank-mode="wildy">Wildy rank</button></div>
           <div class="grid" id="leaderboard-grid"></div>
-          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Winner system</div><h2>How Clan War Board decides who won.</h2><p>The winner system weighs kills, deaths, returns, location control, pressure, and third-party interference against the terms both leaders accepted.</p></div>
+          <div class="page-head" style="margin-top:26px"><div class="eyebrow">Result integrity</div><h2>Both clans must confirm the same result.</h2><p>A single clan cannot publish a winner or change ratings unilaterally. Disputes pause the result and can reverse a rating pending moderator review.</p></div>
           <div class="grid" id="judging-grid"></div>
         </section>
 
         <section class="page" data-page="/results">
-          <div class="page-head"><div class="eyebrow">War records</div><h2>Completed battle results.</h2><p>Open any completed fight for cumulative clan, player, opponent, confidence, evidence, location, and event-by-event analysis.</p></div>
+          <div class="page-head"><div class="eyebrow">War records</div><h2>Completed battle results.</h2><p>Only mutually confirmed, publishable clan results appear here. The production plugin does not supply opponent, combat, or location telemetry.</p></div>
           <div id="battle-list"></div>
           <div id="fight-analytics" class="analytics hidden">
             <div class="page-head"><div class="eyebrow">Verbose fight analytics</div><h2 id="analytics-title">Fight details</h2><p id="analytics-terms"></p></div>
@@ -235,7 +235,7 @@
         return `<div class="card panel"><h3>${esc(title)}</h3><div>${Object.entries(values || {}).sort((a,b)=>b[1]-a[1]).map(([key,value]) => pill(`${metricLabel(key)}: ${fmt.format(value)}`, key === 'high' ? 'green' : '')).join('') || pill('No observations')}</div></div>`;
       }
       function renderLeaderboard(leaderboard) {
-        $('leaderboard-grid').innerHTML = leaderboard.standings.length ? leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(leaderboard.modeLabel || rankMode.toUpperCase(), 'gold')}${pill((c.ratingStatus || 'unrated').replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('') : emptyCard(`No ranked ${rankMode.toUpperCase()} clans yet`, 'Rankings unlock after completed, non-disputed plugin fights with sufficient roster and telemetry confidence.');
+        $('leaderboard-grid').innerHTML = leaderboard.standings.length ? leaderboard.standings.slice(0, 12).map(c => `<div class="card panel"><h3>#${c.rank} ${c.clan_name}</h3><div>${pill(leaderboard.modeLabel || rankMode.toUpperCase(), 'gold')}${pill((c.ratingStatus || 'unrated').replaceAll('_', ' '))}</div><div class="row"><div class="metric"><strong>${c.record.wins}-${c.record.losses}-${c.record.draws}</strong>record</div><div class="metric"><strong>${c.rating ?? 'Unrated'}</strong>rating</div><div class="metric"><strong>${fmt.format(c.member_count || 0)}</strong>members</div></div></div>`).join('') : emptyCard(`No ranked ${rankMode.toUpperCase()} clans yet`, 'Rankings unlock after both clans confirm the same eligible, non-disputed result.');
       }
       async function changeRankMode(mode) {
         rankMode = mode;

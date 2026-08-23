@@ -1349,7 +1349,7 @@ def get_public_availability() -> dict[str, Any]:
         "availability": availability,
         "scheduled": scheduled,
         "history": history,
-        "emptyState": "No real scheduled fights have been posted yet. The next step is enabling authenticated RuneLite leader submissions.",
+        "emptyState": "No real scheduled fights have been posted yet. Authorized clan leaders can publish availability from the RuneLite panel.",
         "fightSetupFields": FIGHT_SETUP_FIELDS,
     }
 
@@ -1404,8 +1404,8 @@ def get_past_battles() -> dict[str, Any]:
     battles.sort(key=lambda row: str(row.get("startsAt") or ""), reverse=True)
     return {
         "generatedAt": utc_now_iso(),
-        "source": "Clan War Board completed fight telemetry",
-        "privacy": "completed fights only; private players use stable anonymous labels",
+        "source": "Clan War Board mutually confirmed results",
+        "privacy": "completed clan results only; the production plugin does not upload opponent, combat, or location telemetry",
         "battles": battles,
         "emptyState": "No real completed Clan War Board fights have been published yet.",
     }
