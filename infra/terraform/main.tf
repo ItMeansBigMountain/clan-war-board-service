@@ -79,6 +79,12 @@ resource "azurerm_static_web_app" "web" {
   sku_tier            = "Free"
   sku_size            = "Free"
   tags                = local.merged_tags
+
+  lifecycle {
+    # Deployment workflow owns managed-API settings and repository linkage.
+    # Terraform owns the SWA resource without erasing runtime configuration.
+    ignore_changes = [app_settings, repository_url, repository_branch]
+  }
 }
 
 resource "azurerm_consumption_budget_resource_group" "main" {
