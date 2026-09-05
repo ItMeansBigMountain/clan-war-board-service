@@ -25,7 +25,6 @@ on:
         default: app-dev
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
@@ -79,12 +78,11 @@ jobs:
             exit 1
           fi
 
-      - name: Azure login via OIDC
+      - name: Azure login via service principal
         uses: azure/login@v2
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          enable-AzPSSession: false
 
       - name: Configure Cosmos backend settings
         shell: bash

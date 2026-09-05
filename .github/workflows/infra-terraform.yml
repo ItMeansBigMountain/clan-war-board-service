@@ -32,21 +32,23 @@ on:
         default: false
 
 permissions:
-  id-token: write
   contents: read
   pull-requests: write
 
 env:
-  ARM_USE_OIDC: true
+  ARM_USE_OIDC: false
   ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
   ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   TF_IN_AUTOMATION: true
+  TF_INPUT: false
 
 jobs:
   terraform:
     name: Terraform plan/apply
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: ${{ github.event.inputs.environment || 'infra-dev' }}
     defaults:
       run:
@@ -78,12 +80,11 @@ jobs:
             exit 1
           fi
 
-      - name: Azure login via OIDC
+      - name: Azure login via service principal
         uses: azure/login@v2
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          enable-AzPSSession: false
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -110,7 +111,7 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
             -backend-config="key=clan-war-board/${{ steps.tfenv.outputs.name }}.tfstate" \
-            -backend-config="use_oidc=true"
+            -backend-config="use_azuread_auth=true"
 
       - name: Terraform validate
         run: terraform validate

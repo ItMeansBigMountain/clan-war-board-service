@@ -7,8 +7,14 @@ monthly_budget_amount      = 10
 budget_contact_emails      = []
 
 tags = {
-  Project     = "ClanWarBoard"
-  Environment = "prod"
-  ManagedBy   = "Terraform"
-  CostGuard   = "near-free"
+  AppName        = "ClanWarBoard"
+  AppSlug        = "clan-war-board"
+  Project        = "ClanWarBoard"
+  Service        = "clan-war-board"
+  ManagedBy      = "Terraform"
+  DeployedBy     = "HermesAgent"
+  DeploymentTool = "HermesAgent"
+  IaC            = "Terraform"
+  Repository     = "ItMeansBigMountain/clan-war-board-service"
+  CostGuard      = "near-free"
 }
