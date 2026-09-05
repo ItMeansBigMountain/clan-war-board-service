@@ -30,6 +30,11 @@ on:
         description: Apply Terraform plan after approval
         type: boolean
         default: false
+      force_unlock_id:
+        description: Stale Terraform lock ID to recover after confirming no run is active
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -112,6 +117,10 @@ jobs:
             -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
             -backend-config="key=clan-war-board/${{ steps.tfenv.outputs.name }}.tfstate" \
             -backend-config="access_key=${{ secrets.TFSTATE_STORAGE_KEY }}"
+
+      - name: Recover explicitly identified stale Terraform lock
+        if: github.event_name == 'workflow_dispatch' && inputs.force_unlock_id != ''
+        run: terraform force-unlock -force "${{ inputs.force_unlock_id }}"
 
       - name: Terraform validate
         run: terraform validate
