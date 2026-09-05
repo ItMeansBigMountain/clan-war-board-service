@@ -11,8 +11,4 @@ terraform {
       version = "~> 3.6"
     }
   }
-
-  # Remote state is configured by GitHub Actions using -backend-config so the
-  # same code can target dev/prod state keys without committing account names.
-  backend "azurerm" {}
 }
