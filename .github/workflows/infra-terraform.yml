@@ -111,7 +111,7 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
             -backend-config="key=clan-war-board/${{ steps.tfenv.outputs.name }}.tfstate" \
-            -backend-config="use_azuread_auth=true"
+            -backend-config="access_key=${{ secrets.TFSTATE_STORAGE_KEY }}"
 
       - name: Terraform validate
         run: terraform validate
