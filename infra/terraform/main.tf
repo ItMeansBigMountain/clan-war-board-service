@@ -7,12 +7,6 @@ locals {
   })
 }
 
-resource "random_string" "suffix" {
-  length  = 6
-  upper   = false
-  special = false
-}
-
 resource "azurerm_resource_group" "main" {
   name     = local.resource_group_name
   location = var.location
@@ -20,7 +14,7 @@ resource "azurerm_resource_group" "main" {
 }
 
 resource "azurerm_cosmosdb_account" "main" {
-  name                = "cosmos-${local.name_prefix}-${random_string.suffix.result}"
+  name                = var.cosmos_account_name
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   offer_type          = "Standard"
@@ -79,7 +73,7 @@ resource "azurerm_cosmosdb_sql_container" "summaries" {
 }
 
 resource "azurerm_static_web_app" "web" {
-  name                = "stapp-${local.name_prefix}-${random_string.suffix.result}"
+  name                = var.static_web_app_name
   resource_group_name = azurerm_resource_group.main.name
   location            = var.static_web_app_location
   sku_tier            = "Free"

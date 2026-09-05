@@ -39,6 +39,16 @@ variable "resource_group_name" {
   default     = ""
 }
 
+variable "cosmos_account_name" {
+  type        = string
+  description = "Existing or new Cosmos DB account name."
+}
+
+variable "static_web_app_name" {
+  type        = string
+  description = "Existing or new Static Web App name."
+}
+
 variable "cosmos_database_throughput" {
   type        = number
   description = "Shared Cosmos DB SQL database throughput. Keep <= 1000 RU/s for free-tier safety."

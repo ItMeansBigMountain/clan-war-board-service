@@ -122,6 +122,36 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.force_unlock_id != ''
         run: terraform force-unlock -force "${{ inputs.force_unlock_id }}"
 
+      - name: Import existing dev resources into Terraform state
+        if: steps.tfenv.outputs.name == 'dev'
+        shell: bash
+        run: |
+          subscription="${{ vars.AZURE_SUBSCRIPTION_ID }}"
+          rg="rg-cwb-dev"
+          cosmos="cosmos-cwb-dev-0vksy9"
+          swa="stapp-cwb-dev-0vksy9"
+          database="clan-war-board"
+          tfvars="env/dev.tfvars"
+
+          import_if_missing() {
+            local address="$1"
+            local resource_id="$2"
+            terraform state list | grep -Fxq "$address" || \
+              timeout 5m terraform import -input=false -var-file="$tfvars" \
+                -var="azure_subscription_id=$subscription" "$address" "$resource_id"
+          }
+
+          base="/subscriptions/$subscription/resourceGroups/$rg"
+          cosmos_base="$base/providers/Microsoft.DocumentDB/databaseAccounts/$cosmos"
+          database_base="$cosmos_base/sqlDatabases/$database"
+          import_if_missing azurerm_resource_group.main "$base"
+          import_if_missing azurerm_cosmosdb_account.main "$cosmos_base"
+          import_if_missing azurerm_cosmosdb_sql_database.main "$database_base"
+          import_if_missing azurerm_cosmosdb_sql_container.clans "$database_base/containers/clans"
+          import_if_missing azurerm_cosmosdb_sql_container.wars "$database_base/containers/wars"
+          import_if_missing azurerm_cosmosdb_sql_container.summaries "$database_base/containers/summaries"
+          import_if_missing azurerm_static_web_app.web "$base/providers/Microsoft.Web/staticSites/$swa"
+
       - name: Terraform validate
         run: terraform validate
 
